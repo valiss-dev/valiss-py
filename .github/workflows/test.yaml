@@ -1,0 +1,47 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: valiss-py
+
+    # Sibling checkout of the Go implementation so the cross-language
+    # interop suite runs instead of skipping.
+    - uses: actions/checkout@v4
+      with:
+        repository: mikluko/valiss
+        path: valiss
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: valiss-py/tests/interop/go.mod
+        cache-dependency-path: valiss-py/tests/interop/go.sum
+
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Install dependencies
+      working-directory: valiss-py
+      run: uv sync --all-extras
+
+    - name: Test
+      working-directory: valiss-py
+      run: uv run pytest -v
+
+    - name: Run examples
+      working-directory: valiss-py
+      run: |
+        uv run examples/httpauth.py
+        uv run examples/grpcauth.py
