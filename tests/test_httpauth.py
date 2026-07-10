@@ -3,82 +3,99 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from valiss import ValissError, creds, httpauth, nkeys, token
+from valiss import creds, httpauth, nkeys, token
 
-NOW = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
-TTL = timedelta(hours=1)
+NOW = datetime(2026, 7, 10, 12, 0, 0, tzinfo=timezone.utc)
+TTL = timedelta(minutes=15)
 
 
-@pytest.fixture
-def setup():
-    operator = nkeys.create_operator()
-    account = nkeys.create_account()
-    tok = token.issue(operator, "acme", account.public_key, ["call:/v1/*"], TTL, now=NOW)
-    issued = token.verify(tok, operator.public_key)
-    verifier = token.Verifier(
-        operator.public_key, token.StaticAllowlist(issued.id), now=lambda: NOW
+@pytest.fixture(scope="module")
+def operator():
+    return nkeys.create_operator()
+
+
+@pytest.fixture(scope="module")
+def account():
+    return nkeys.create_account()
+
+
+@pytest.fixture(scope="module")
+def user():
+    return nkeys.create_user()
+
+
+@pytest.fixture(scope="module")
+def user_creds(operator, account, user):
+    return creds.Creds(
+        account_token=token.issue_account(operator, "acme", account.public_key, ttl=TTL, now=NOW),
+        user_token=token.issue_user(account, "alice", user.public_key, ttl=TTL, now=NOW),
+        seed=user.seed,
     )
-    bundle = creds.Bundle(token=tok, seed=account.seed)
-    return verifier, bundle
 
 
-def test_credential_headers_verify(setup):
-    verifier, bundle = setup
-    headers = httpauth.credential_headers(bundle, now=lambda: NOW)
-    claims = verifier.verify_credential(httpauth.extract_credential(headers))
-    assert claims.tenant_id == "acme"
+def test_credential_headers_signing(user_creds, user):
+    headers = httpauth.credential_headers(user_creds, now=lambda: NOW)
+    assert headers[token.HEADER_ACCOUNT_TOKEN] == user_creds.account_token
+    assert headers[token.HEADER_USER_TOKEN] == user_creds.user_token
+    token.verify_signature(
+        user.public_key, headers[token.HEADER_TIMESTAMP], headers[token.HEADER_SIGNATURE], NOW
+    )
 
 
-def test_bearer_bundle_has_no_signature(setup):
-    _, bundle = setup
-    headers = httpauth.credential_headers(creds.Bundle(token=bundle.token))
+def test_credential_headers_bearer(operator, account, user):
+    c = creds.Creds(
+        account_token=token.issue_account(operator, "acme", account.public_key, ttl=TTL, now=NOW),
+        user_token=token.issue_user(
+            account, "bob", user.public_key, ttl=TTL, bearer=True, now=NOW
+        ),
+    )
+    headers = httpauth.credential_headers(c)
     assert token.HEADER_TIMESTAMP not in headers
     assert token.HEADER_SIGNATURE not in headers
-    assert headers[token.HEADER_TOKEN] == bundle.token
 
 
-def test_user_token_header(setup):
-    _, bundle = setup
-    bundle.user_token = "user.token.sig"
-    headers = httpauth.credential_headers(bundle, now=lambda: NOW)
-    assert headers[token.HEADER_USER_TOKEN] == "user.token.sig"
+def test_credential_headers_omit_missing_account_token(user_creds):
+    c = creds.Creds(user_token=user_creds.user_token, seed=user_creds.seed)
+    headers = httpauth.credential_headers(c, now=lambda: NOW)
+    assert token.HEADER_ACCOUNT_TOKEN not in headers
+    assert headers[token.HEADER_USER_TOKEN] == c.user_token
 
 
-def test_httpx_auth_end_to_end(setup):
-    verifier, bundle = setup
-
+def test_httpx_auth_attaches_headers(user_creds, user):
     def handler(request: httpx.Request) -> httpx.Response:
-        cred = httpauth.extract_credential(request.headers)
-        try:
-            claims = verifier.verify_credential(cred)
-        except ValissError as exc:
-            return httpx.Response(401, text=str(exc))
-        if not claims.authorizes(httpauth.scope_for_path(request.url.path)):
-            return httpx.Response(403)
-        return httpx.Response(200, text=claims.tenant_id)
+        assert request.headers[token.HEADER_ACCOUNT_TOKEN] == user_creds.account_token
+        assert request.headers[token.HEADER_USER_TOKEN] == user_creds.user_token
+        token.verify_signature(
+            user.public_key,
+            request.headers[token.HEADER_TIMESTAMP],
+            request.headers[token.HEADER_SIGNATURE],
+            NOW,
+        )
+        return httpx.Response(200)
 
     client = httpx.Client(
         transport=httpx.MockTransport(handler),
-        auth=httpauth.Auth(bundle, now=lambda: NOW),
+        auth=httpauth.Auth(user_creds, now=lambda: NOW),
     )
-    resp = client.get("http://server/v1/whoami")
-    assert resp.status_code == 200
-    assert resp.text == "acme"
-    assert client.get("http://server/admin").status_code == 403
-
-    bare = httpx.Client(transport=httpx.MockTransport(handler))
-    assert bare.get("http://server/v1/whoami").status_code == 401
+    assert client.get("https://api.example.com/v1/whoami").status_code == 200
 
 
-def test_auth_rejects_malformed_seed():
-    with pytest.raises(ValissError, match="creds seed"):
-        httpauth.Auth(creds.Bundle(token="t", seed="garbage"))
+def test_ext_payload_omits_empty_dimensions():
+    ext = httpauth.Ext(paths=["/v1/*"])
+    assert ext.extension_name() == "http"
+    assert ext.extension_payload() == {"paths": ["/v1/*"]}
+    full = httpauth.Ext(hosts=["api.example.com"], methods=["GET"], paths=["/v1/*"])
+    assert full.extension_payload() == {
+        "hosts": ["api.example.com"],
+        "methods": ["GET"],
+        "paths": ["/v1/*"],
+    }
 
 
-def test_fresh_signature_per_request(setup):
-    _, bundle = setup
-    clock = iter([NOW, NOW + timedelta(seconds=1)])
-    first = httpauth.credential_headers(bundle, now=lambda: next(clock))
-    second = httpauth.credential_headers(bundle, now=lambda: next(clock))
-    assert first[token.HEADER_TIMESTAMP] != second[token.HEADER_TIMESTAMP]
-    assert first[token.HEADER_SIGNATURE] != second[token.HEADER_SIGNATURE]
+def test_ext_mints_into_token(account, user):
+    tok = token.issue_user(
+        account, "alice", user.public_key, ttl=TTL,
+        extensions=[httpauth.Ext(paths=["/v1/*"])], now=NOW,
+    )
+    claims = token.verify_user(tok, account.public_key)
+    assert claims.ext == {"http": {"paths": ["/v1/*"]}}

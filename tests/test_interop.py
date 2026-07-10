@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from valiss import creds, nkeys, token
+from valiss import creds, httpauth, nkeys, token
 
 INTEROP_DIR = Path(__file__).parent / "interop"
 VALISS_GO = Path(__file__).parent.parent.parent / "valiss"
@@ -36,74 +36,131 @@ def _run(*args: str, stdin: str | None = None) -> str:
 
 def test_go_minted_credentials_verify_in_python():
     minted = json.loads(_run("mint"))
-    verifier = token.Verifier(minted["operator_pub"], token.StaticAllowlist(minted["jti"]))
     now = datetime.now(timezone.utc)
 
-    account_bundle = creds.parse(minted["account_creds"])
-    timestamp, signature = token.sign_request(account_bundle.signer(), now)
-    claims = verifier.verify_credential(
-        token.Credential(token=account_bundle.token, timestamp=timestamp, signature=signature)
-    )
-    assert claims.tenant_id == "acme"
-    assert claims.scopes == ["call:/v1/*"]
+    account_creds = creds.parse(minted["account_creds"])
+    account = token.verify_account(account_creds.account_token, minted["operator_pub"])
+    assert account.name == "acme"
+    assert account.id == minted["jti"]
+    assert not account.expired(now)
 
-    user_bundle = creds.parse(minted["user_creds"])
-    timestamp, signature = token.sign_request(user_bundle.signer(), now)
-    claims = verifier.verify_credential(
-        token.Credential(
-            token=user_bundle.token,
-            user_token=user_bundle.user_token,
-            timestamp=timestamp,
-            signature=signature,
-        )
-    )
-    assert claims.tenant_id == "acme"
-    assert claims.user_id == "alice"
-    assert claims.scopes == ["call:/v1/whoami"]
+    user_creds = creds.parse(minted["user_creds"])
+    user = token.verify_user(user_creds.user_token, account.subject)
+    assert user.name == "alice"
+    assert user.bearer is False
+    # The Go-minted seed signs in Python and verifies against the token's
+    # bound key.
+    timestamp, signature = token.sign_request(user_creds.signer(), now)
+    token.verify_signature(user.subject, timestamp, signature, now)
+
+    bearer_creds = creds.parse(minted["bearer_creds"])
+    bearer = token.verify_user(bearer_creds.user_token, account.subject)
+    assert bearer.name == "bob"
+    assert bearer.bearer is True
+    assert bearer_creds.signer() is None
+    headers = httpauth.credential_headers(bearer_creds)
+    assert token.HEADER_TIMESTAMP not in headers
 
 
-def test_python_minted_credentials_verify_in_go():
+def test_python_minted_signing_user_verifies_in_go():
     operator = nkeys.create_operator()
     account = nkeys.create_account()
     user = nkeys.create_user()
-    ttl = timedelta(hours=1)
     now = datetime.now(timezone.utc)
 
-    tok = token.issue(operator, "acme", account.public_key, ["call:/v1/*"], ttl, now=now)
-    issued = token.verify(tok, operator.public_key)
+    account_tok = token.issue_account(
+        operator, "acme", account.public_key, ttl=timedelta(hours=1), now=now
+    )
+    jti = token.verify_account(account_tok, operator.public_key).id
+    user_tok = token.issue_user(
+        account,
+        "alice",
+        user.public_key,
+        ttl=timedelta(minutes=15),
+        extensions=[httpauth.Ext(paths=["/v1/*"])],
+        now=now,
+    )
+    user_creds = creds.Creds(account_token=account_tok, user_token=user_tok, seed=user.seed)
+    headers = httpauth.credential_headers(user_creds)
 
+    out = json.loads(
+        _run(
+            "verify",
+            stdin=json.dumps(
+                {
+                    "operator_pub": operator.public_key,
+                    "jti": jti,
+                    "account_token": headers[token.HEADER_ACCOUNT_TOKEN],
+                    "user_token": headers[token.HEADER_USER_TOKEN],
+                    "timestamp": headers[token.HEADER_TIMESTAMP],
+                    "signature": headers[token.HEADER_SIGNATURE],
+                }
+            ),
+        )
+    )
+    assert out["account"] == "acme"
+    assert out["user"] == "alice"
+    assert "bearer" not in out
+    assert out["user_ext"] == {"http": {"paths": ["/v1/*"]}}
+
+
+def test_python_minted_bearer_user_verifies_in_go():
+    operator = nkeys.create_operator()
+    account = nkeys.create_account()
+    # Bearer creds carry no seed: the user key pair is discarded after
+    # minting, making the token the sole credential.
+    user = nkeys.create_user()
+    now = datetime.now(timezone.utc)
+
+    account_tok = token.issue_account(
+        operator, "acme", account.public_key, ttl=timedelta(hours=1), now=now
+    )
+    jti = token.verify_account(account_tok, operator.public_key).id
+    user_tok = token.issue_user(
+        account, "bob", user.public_key, ttl=timedelta(minutes=15), bearer=True, now=now
+    )
+    bearer_creds = creds.Creds(account_token=account_tok, user_token=user_tok)
+    headers = httpauth.credential_headers(bearer_creds)
+
+    out = json.loads(
+        _run(
+            "verify",
+            stdin=json.dumps(
+                {
+                    "operator_pub": operator.public_key,
+                    "jti": jti,
+                    "account_token": headers[token.HEADER_ACCOUNT_TOKEN],
+                    "user_token": headers[token.HEADER_USER_TOKEN],
+                }
+            ),
+        )
+    )
+    assert out == {"account": "acme", "user": "bob", "bearer": True}
+
+
+def test_python_minted_account_credential_verifies_in_go():
+    operator = nkeys.create_operator()
+    account = nkeys.create_account()
+    now = datetime.now(timezone.utc)
+
+    account_tok = token.issue_account(
+        operator, "acme", account.public_key, ttl=timedelta(hours=1), now=now
+    )
+    jti = token.verify_account(account_tok, operator.public_key).id
     timestamp, signature = token.sign_request(account, now)
-    out = json.loads(
-        _run(
-            "verify",
-            stdin=json.dumps(
-                {
-                    "operator_pub": operator.public_key,
-                    "jti": issued.id,
-                    "token": tok,
-                    "timestamp": timestamp,
-                    "signature": signature,
-                }
-            ),
-        )
-    )
-    assert out == {"tenant_id": "acme", "user_id": "", "scopes": ["call:/v1/*"]}
 
-    user_tok = token.issue_user(account, "alice", user.public_key, ["call:/v1/whoami"], ttl, now=now)
-    timestamp, signature = token.sign_request(user, now)
     out = json.loads(
         _run(
             "verify",
             stdin=json.dumps(
                 {
                     "operator_pub": operator.public_key,
-                    "jti": issued.id,
-                    "token": tok,
-                    "user_token": user_tok,
+                    "jti": jti,
+                    "account_token": account_tok,
                     "timestamp": timestamp,
                     "signature": signature,
                 }
             ),
         )
     )
-    assert out == {"tenant_id": "acme", "user_id": "alice", "scopes": ["call:/v1/whoami"]}
+    assert out == {"account": "acme"}

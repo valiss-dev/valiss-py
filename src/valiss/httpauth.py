@@ -1,60 +1,82 @@
-"""HTTP client side of the tenant authentication scheme.
+"""HTTP client side of the valiss authentication scheme.
 
 ``credential_headers`` builds the per-request header set for any HTTP
-client; ``Auth`` wraps it as an httpx auth hook. Server-side extraction is
-``extract_credential``; pass the result to token.Verifier.verify_credential.
+client; ``Auth`` wraps it as an httpx auth hook. ``Ext`` is the HTTP
+transport extension claim Go servers enforce; mint it into tokens with
+``token.issue_user(..., extensions=[Ext(...)])``.
 
-Requires the ``httpx`` extra only for the Auth class; ``credential_headers``
-and ``extract_credential`` are dependency-free.
+Requires the ``httpx`` extra only for the Auth class; everything else is
+dependency-free.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from . import creds, token
 from .errors import ValissError
 
 
+@dataclass
+class Ext:
+    """HTTP transport extension claim: binds a token to specific hosts,
+    methods, and paths.
+
+    Enforcement on the Go server is fail-closed: every token in the chain
+    must carry the extension (unless the middleware allows missing ones),
+    and the zero-value extension grants nothing. A non-empty extension
+    leaves its empty dimensions unconstrained, so ``Ext(paths=["/v1/*"])``
+    permits any host and method under ``/v1/``; allow-all is the explicit
+    ``Ext(paths=["*"])``.
+    """
+
+    # hosts allowed, matched exactly against the request Host.
+    hosts: list[str] = field(default_factory=list)
+    # methods allowed, matched exactly (upper-case, e.g. "GET").
+    methods: list[str] = field(default_factory=list)
+    # paths allowed; a trailing "*" is a prefix wildcard, so "/v1/*" covers
+    # every path under /v1/.
+    paths: list[str] = field(default_factory=list)
+
+    def extension_name(self) -> str:
+        return "http"
+
+    def extension_payload(self) -> Mapping[str, Any]:
+        payload: dict[str, Any] = {}
+        if self.hosts:
+            payload["hosts"] = self.hosts
+        if self.methods:
+            payload["methods"] = self.methods
+        if self.paths:
+            payload["paths"] = self.paths
+        return payload
+
+
 def credential_headers(
-    bundle: creds.Bundle, *, now: Callable[[], datetime] | None = None
+    c: creds.Creds, *, now: Callable[[], datetime] | None = None
 ) -> dict[str, str]:
-    """Headers a client attaches to one request: the bundle's tokens and,
-    when the bundle holds a seed, a fresh signature. Bundles without a seed
-    are bearer credentials: the server accepts them only when the effective
-    token grants token.SCOPE_BEARER.
+    """Headers a client attaches to one request: the creds' tokens and,
+    when the creds hold a seed, a fresh signature. Creds without a seed are
+    bearer credentials: the server accepts them only when the effective
+    token is a bearer user token.
 
     Signatures are single-use by freshness: build a new header set per
     request.
     """
-    headers = {token.HEADER_TOKEN: bundle.token}
-    if bundle.user_token:
-        headers[token.HEADER_USER_TOKEN] = bundle.user_token
-    signer = bundle.signer()
+    headers: dict[str, str] = {}
+    if c.account_token:
+        headers[token.HEADER_ACCOUNT_TOKEN] = c.account_token
+    if c.user_token:
+        headers[token.HEADER_USER_TOKEN] = c.user_token
+    signer = c.signer()
     if signer is not None:
-        ts = now() if now is not None else datetime.now().astimezone()
-        timestamp, signature = token.sign_request(signer, ts)
+        timestamp, signature = token.sign_request(signer, now() if now is not None else None)
         headers[token.HEADER_TIMESTAMP] = timestamp
         headers[token.HEADER_SIGNATURE] = signature
     return headers
-
-
-def extract_credential(headers: Mapping[str, str]) -> token.Credential:
-    """Build the per-request credential from a case-insensitive-get header
-    mapping (http.server, WSGI-adapted, starlette, etc.)."""
-    return token.Credential(
-        token=headers.get(token.HEADER_TOKEN, ""),
-        user_token=headers.get(token.HEADER_USER_TOKEN, ""),
-        timestamp=headers.get(token.HEADER_TIMESTAMP, ""),
-        signature=headers.get(token.HEADER_SIGNATURE, ""),
-    )
-
-
-def scope_for_path(path: str) -> str:
-    """Per-call scope a tenant must hold under path-scope enforcement:
-    ``call:`` joined with the request path, e.g. ``call:/v1/widgets``."""
-    return "call:" + path
 
 
 try:
@@ -66,19 +88,19 @@ except ImportError:  # httpx is an optional extra; Auth needs it, the rest does 
 if httpx is not None:
 
     class Auth(httpx.Auth):
-        """httpx auth hook that attaches the credential bundle's tokens
-        and, when the bundle holds a seed, a fresh per-request signature.
+        """httpx auth hook that attaches the creds' tokens and, when the
+        creds hold a seed, a fresh per-request signature.
 
-        Pass as ``httpx.Client(auth=Auth(bundle))``.
+        Pass as ``httpx.Client(auth=Auth(creds_))``.
         """
 
-        def __init__(self, bundle: creds.Bundle, *, now: Callable[[], datetime] | None = None):
-            bundle.signer()  # fail fast on a malformed seed
-            self._bundle = bundle
+        def __init__(self, c: creds.Creds, *, now: Callable[[], datetime] | None = None):
+            c.signer()  # fail fast on a malformed seed
+            self._creds = c
             self._now = now
 
         def auth_flow(self, request: httpx.Request) -> Iterator[httpx.Request]:
-            request.headers.update(credential_headers(self._bundle, now=self._now))
+            request.headers.update(credential_headers(self._creds, now=self._now))
             yield request
 
 else:

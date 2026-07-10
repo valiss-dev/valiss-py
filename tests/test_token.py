@@ -1,150 +1,191 @@
 import base64
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from valiss import ValissError, nkeys, token
+from valiss import nkeys, token
+from valiss.errors import ValissError
 
-NOW = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
-TTL = timedelta(hours=1)
+NOW = datetime(2026, 7, 10, 12, 0, 0, tzinfo=timezone.utc)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def operator():
     return nkeys.create_operator()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def account():
     return nkeys.create_account()
 
 
-def test_issue_verify(operator, account):
-    tok = token.issue(operator, "acme", account.public_key, ["call:/v1/*"], TTL, now=NOW)
-    claims = token.verify(tok, operator.public_key)
-    assert claims.tenant_id == "acme"
-    assert claims.pub_key == account.public_key
-    assert claims.scopes == ["call:/v1/*"]
-    assert claims.issuer == operator.public_key
+@pytest.fixture(scope="module")
+def user():
+    return nkeys.create_user()
+
+
+def _payload(tok: str) -> dict:
+    chunk = tok.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(chunk + "=" * (-len(chunk) % 4)))
+
+
+def test_issue_user_round_trip(account, user):
+    tok = token.issue_user(account, "alice", user.public_key, ttl=timedelta(minutes=15), now=NOW)
+    claims = token.verify_user(tok, account.public_key)
+    assert claims.name == "alice"
+    assert claims.subject == user.public_key
+    assert claims.issuer == account.public_key
+    assert claims.bearer is False
+    assert claims.expires_at == NOW + timedelta(minutes=15)
+    assert claims.issued_at == NOW
     assert claims.id
-    assert claims.expires_at == NOW + TTL
-    assert claims.user_id == ""
+    assert not claims.expired(NOW + timedelta(minutes=15))
+    assert claims.expired(NOW + timedelta(minutes=18))
 
 
-def test_issue_rejects_non_operator_signer(account):
-    with pytest.raises(ValissError, match="operator-type nkey"):
-        token.issue(account, "acme", account.public_key, [], TTL)
+def test_issue_user_bearer(account, user):
+    tok = token.issue_user(
+        account, "bob", user.public_key, ttl=timedelta(minutes=5), bearer=True, now=NOW
+    )
+    claims = token.verify_user(tok, account.public_key)
+    assert claims.bearer is True
+    assert _payload(tok)["valiss"]["bearer"] is True
 
 
-def test_issue_rejects_bad_tenant_key(operator):
-    with pytest.raises(ValissError, match="invalid tenant public key"):
-        token.issue(operator, "acme", operator.public_key, [], TTL)
+def test_issue_user_epoch_and_extensions(account, user):
+    tok = token.issue_user(
+        account,
+        "alice",
+        user.public_key,
+        ttl=timedelta(minutes=5),
+        epoch=3,
+        extensions=[token.RawExtension("custom", {"role": "admin"})],
+        now=NOW,
+    )
+    claims = token.verify_user(tok, account.public_key)
+    assert claims.epoch == 3
+    assert claims.ext == {"custom": {"role": "admin"}}
 
 
-def test_issue_rejects_non_positive_ttl(operator, account):
-    with pytest.raises(ValissError, match="ttl must be positive"):
-        token.issue(operator, "acme", account.public_key, [], timedelta(0))
-
-
-def test_issue_user(account):
-    user = nkeys.create_user()
-    tok = token.issue_user(account, "alice", user.public_key, ["call:/v1/get"], TTL, now=NOW)
-    claims = token.verify(tok, account.public_key)
-    assert claims.tenant_id == "alice"
-    assert claims.pub_key == user.public_key
-    assert claims.scopes == ["call:/v1/get"]
-
-
-def test_issue_user_rejects_non_account_signer(operator):
-    user = nkeys.create_user()
-    with pytest.raises(ValissError, match="account-type nkey"):
-        token.issue_user(operator, "alice", user.public_key, [], TTL)
-
-
-def test_issue_user_keyless_requires_bearer(account):
-    with pytest.raises(ValissError, match="bearer"):
-        token.issue_user(account, "carol", "", ["call:/v1/get"], TTL)
-    tok = token.issue_user(account, "carol", "", [token.SCOPE_BEARER], TTL, now=NOW)
-    claims = token.verify(tok, account.public_key)
-    assert claims.pub_key == ""
-    assert claims.has_scope(token.SCOPE_BEARER)
-
-
-def test_verify_rejects_wrong_issuer(operator, account):
-    tok = token.issue(operator, "acme", account.public_key, [], TTL, now=NOW)
-    other = nkeys.create_operator()
-    with pytest.raises(ValissError, match="not signed by the expected issuer"):
-        token.verify(tok, other.public_key)
-
-
-def test_verify_rejects_tampered_payload(operator, account):
-    tok = token.issue(operator, "acme", account.public_key, [], TTL, now=NOW)
-    header, payload, sig = tok.split(".")
-    tampered = ".".join([header, payload[:-2] + ("aa" if payload[-2:] != "aa" else "bb"), sig])
-    with pytest.raises(ValissError):
-        token.verify(tampered, operator.public_key)
-
-
-def test_verify_rejects_malformed(operator):
-    with pytest.raises(ValissError, match="3 chunks"):
-        token.verify("only.two", operator.public_key)
-
-
-def test_sign_verify_request(account):
-    timestamp, signature = token.sign_request(account, NOW)
-    token.verify_request(account.public_key, timestamp, signature, NOW, token.DEFAULT_SKEW)
-
-
-def test_verify_request_skew_window(account):
-    timestamp, signature = token.sign_request(account, NOW)
-    late = NOW + token.DEFAULT_SKEW + timedelta(seconds=1)
-    with pytest.raises(ValissError, match="skew window"):
-        token.verify_request(account.public_key, timestamp, signature, late, token.DEFAULT_SKEW)
-    early = NOW - token.DEFAULT_SKEW - timedelta(seconds=1)
-    with pytest.raises(ValissError, match="skew window"):
-        token.verify_request(account.public_key, timestamp, signature, early, token.DEFAULT_SKEW)
-
-
-def test_verify_request_rejects_wrong_key(account):
-    timestamp, signature = token.sign_request(account, NOW)
-    other = nkeys.create_account()
-    with pytest.raises(ValissError, match="signature verification failed"):
-        token.verify_request(other.public_key, timestamp, signature, NOW, token.DEFAULT_SKEW)
-
-
-def test_verify_request_rejects_bad_timestamp(account):
-    _, signature = token.sign_request(account, NOW)
-    with pytest.raises(ValissError, match="bad request timestamp"):
-        token.verify_request(account.public_key, "not-a-time", signature, NOW, token.DEFAULT_SKEW)
-    with pytest.raises(ValissError, match="bad request timestamp"):
-        token.verify_request(
-            account.public_key, "2026-07-09T12:00:00", signature, NOW, token.DEFAULT_SKEW
+def test_issue_user_duplicate_extension(account, user):
+    with pytest.raises(ValissError, match="duplicate extension"):
+        token.issue_user(
+            account,
+            "alice",
+            user.public_key,
+            extensions=[token.RawExtension("x", {}), token.RawExtension("x", {})],
         )
 
 
-def test_verify_request_parses_go_nanosecond_timestamps(account):
-    # Go emits up to nine fractional digits; parsing must tolerate them even
-    # though datetime truncates beyond microseconds. The signature is bound
-    # to the raw timestamp string, exactly as a Go client produces it.
-    ts = "2026-07-09T12:00:00.123456789Z"
-    sig = base64.b64encode(account.sign(ts.encode())).decode()
-    token.verify_request(account.public_key, ts, sig, NOW, timedelta(hours=1))
+def test_issue_user_rejects_wrong_key_levels(operator, account, user):
+    with pytest.raises(ValissError, match="account-type nkey"):
+        token.issue_user(operator, "alice", user.public_key)
+    with pytest.raises(ValissError, match="invalid user public key"):
+        token.issue_user(account, "alice", account.public_key)
 
 
-def test_scope_coverage():
-    claims = token.Claims(tenant_id="t", pub_key="", scopes=["call:/v1/*", "admin"])
-    assert claims.authorizes("call:/v1/widgets")
-    assert claims.authorizes("admin")
-    assert not claims.authorizes("call:/v2/widgets")
-    assert not claims.authorizes("admin2")
-    assert token.covered(["call:*"], "call:/anything")
-    assert token.covered(["*"], "anything")
-    assert not token.covered([], "anything")
+def test_issue_user_validity_options(account, user):
+    with pytest.raises(ValissError, match="mutually exclusive"):
+        token.issue_user(
+            account, "a", user.public_key, ttl=timedelta(minutes=1), expiry=NOW, now=NOW
+        )
+    with pytest.raises(ValissError, match="ttl must be positive"):
+        token.issue_user(account, "a", user.public_key, ttl=timedelta(0), now=NOW)
+    tok = token.issue_user(
+        account,
+        "a",
+        user.public_key,
+        expiry=NOW + timedelta(hours=1),
+        not_before=NOW + timedelta(minutes=5),
+        now=NOW,
+    )
+    claims = token.verify_user(tok, account.public_key)
+    assert claims.expires_at == NOW + timedelta(hours=1)
+    assert claims.not_before == NOW + timedelta(minutes=5)
+    assert claims.not_yet_valid(NOW)
+    assert not claims.not_yet_valid(NOW + timedelta(minutes=6))
+    # No expiry option: the token never expires.
+    tok = token.issue_user(account, "a", user.public_key, now=NOW)
+    assert token.verify_user(tok, account.public_key).expires_at is None
 
 
-def test_expired():
-    claims = token.Claims(tenant_id="t", pub_key="", expires_at=NOW)
-    skew = timedelta(minutes=2)
-    assert not claims.expired(NOW + skew, skew)
-    assert claims.expired(NOW + skew + timedelta(seconds=1), skew)
-    assert not token.Claims(tenant_id="t", pub_key="").expired(NOW, skew)
+def test_issue_account_round_trip(operator, account):
+    tok = token.issue_account(
+        operator, "acme", account.public_key, ttl=timedelta(hours=1), now=NOW
+    )
+    claims = token.verify_account(tok, operator.public_key)
+    assert claims.name == "acme"
+    assert claims.subject == account.public_key
+    assert claims.issuer == operator.public_key
+
+
+def test_issue_account_rejects_wrong_key_levels(operator, account, user):
+    with pytest.raises(ValissError, match="operator-type nkey"):
+        token.issue_account(account, "acme", account.public_key)
+    with pytest.raises(ValissError, match="invalid tenant public key"):
+        token.issue_account(operator, "acme", user.public_key)
+
+
+def test_issue_operator_round_trip(operator):
+    tok = token.issue_operator(operator, epoch=7, now=NOW)
+    claims = token.verify_operator(tok, operator.public_key)
+    assert claims.subject == operator.public_key
+    assert claims.epoch == 7
+
+
+def test_verify_rejects_wrong_issuer(account, user):
+    other = nkeys.create_account()
+    tok = token.issue_user(account, "alice", user.public_key, now=NOW)
+    with pytest.raises(ValissError, match="not signed by the expected account"):
+        token.verify_user(tok, other.public_key)
+
+
+def test_verify_rejects_wrong_type(operator, account):
+    acct_tok = token.issue_account(operator, "acme", account.public_key, now=NOW)
+    with pytest.raises(ValissError, match="not a user token"):
+        token.verify_user(acct_tok, operator.public_key)
+
+
+def test_verify_rejects_tampered_token(account, user):
+    tok = token.issue_user(account, "alice", user.public_key, now=NOW)
+    head, _, sig = tok.split(".")
+    doc = _payload(tok)
+    doc["name"] = "mallory"
+    forged = (
+        base64.urlsafe_b64encode(json.dumps(doc, separators=(",", ":")).encode())
+        .decode()
+        .rstrip("=")
+    )
+    with pytest.raises(ValissError, match="signature verification failed"):
+        token.verify_user(f"{head}.{forged}.{sig}", account.public_key)
+
+
+def test_decode_and_issuer_of(account, user):
+    tok = token.issue_user(account, "alice", user.public_key, now=NOW)
+    assert token.issuer_of(tok) == account.public_key
+    claims = token.decode(tok)
+    assert claims.subject == user.public_key
+
+
+def test_wire_shape(account, user):
+    """Payload fields and jti derivation match the Go wire format."""
+    tok = token.issue_user(account, "alice", user.public_key, ttl=timedelta(minutes=5), now=NOW)
+    doc = _payload(tok)
+    assert list(doc) == ["jti", "iat", "iss", "name", "sub", "exp", "valiss"]
+    assert doc["valiss"] == {"type": "user"}
+    unhashed = {k: v for k, v in doc.items() if k != "jti"}
+    digest = hashlib.sha256(
+        json.dumps(unhashed, separators=(",", ":"), ensure_ascii=False).encode()
+    ).digest()
+    assert doc["jti"] == base64.b32encode(digest).decode().rstrip("=")
+
+
+def test_sign_and_verify_request(user):
+    timestamp, signature = token.sign_request(user, NOW)
+    token.verify_signature(user.public_key, timestamp, signature, NOW)
+    with pytest.raises(ValissError, match="skew window"):
+        token.verify_signature(user.public_key, timestamp, signature, NOW + timedelta(minutes=5))
+    with pytest.raises(ValissError, match="signature verification failed"):
+        token.verify_signature(nkeys.create_user().public_key, timestamp, signature, NOW)

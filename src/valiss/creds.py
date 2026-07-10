@@ -1,12 +1,14 @@
-"""Client credential bundle file: the tokens a client presents plus the seed
-that signs its requests, modeled on the nsc creds format. A bundle is
-everything a client needs. File-compatible with valiss's Go pkg/creds.
+"""Client credentials file: the subject's token plus the seed that signs
+its requests, in one marker-delimited text file. A creds file is everything
+a client needs. File-compatible with the Go valiss/creds package.
 
-An account-level bundle holds the operator-signed tenant token and the
-account seed. A user-level bundle additionally holds the account-signed user
-token, and its seed is the user's. A bearer bundle carries tokens only: its
-holder cannot sign requests and the server accepts it only when the token
-grants the bearer scope.
+Account-level creds hold the operator-signed account token and the account
+seed. User-level creds hold the account-signed user token and the user
+seed; the server resolves the account token itself. A *bundle* is the kind
+of creds that additionally carries the upstream account token, for servers
+that do not resolve it. Bearer creds carry tokens only: their holder cannot
+sign requests and the server accepts them only when the effective token is
+a bearer user token.
 """
 
 from __future__ import annotations
@@ -16,8 +18,8 @@ from dataclasses import dataclass
 from . import nkeys
 from .errors import ValissError
 
-_TOKEN_BEGIN = "-----BEGIN VALISS TOKEN-----"
-_TOKEN_END = "------END VALISS TOKEN------"
+_ACCOUNT_TOKEN_BEGIN = "-----BEGIN VALISS ACCOUNT TOKEN-----"
+_ACCOUNT_TOKEN_END = "------END VALISS ACCOUNT TOKEN------"
 _USER_TOKEN_BEGIN = "-----BEGIN VALISS USER TOKEN-----"
 _USER_TOKEN_END = "------END VALISS USER TOKEN------"
 _SEED_BEGIN = "-----BEGIN VALISS SEED-----"
@@ -25,21 +27,23 @@ _SEED_END = "------END VALISS SEED------"
 
 
 @dataclass
-class Bundle:
+class Creds:
     """Parsed content of a creds file."""
 
-    # token is the operator-signed tenant token, present in every bundle.
-    token: str
+    # account_token is the operator-signed account token. User-level creds
+    # omit it by default (the server then resolves the account token by
+    # other means, like static configuration); a bundle embeds it.
+    account_token: str = ""
     # user_token is the account-signed user token; empty in account-level
-    # bundles.
+    # creds.
     user_token: str = ""
-    # seed signs requests as the bundle's subject: the account seed in an
-    # account-level bundle, the user seed in a user-level one. Empty in
-    # bearer bundles.
+    # seed signs requests as the creds' subject: the account seed in
+    # account-level creds, the user seed in user-level ones. Empty in bearer
+    # creds.
     seed: str = ""
 
     def signer(self) -> nkeys.KeyPair | None:
-        """Key pair from the bundle seed; None for bearer bundles."""
+        """Key pair from the creds seed; None for bearer creds."""
         if not self.seed:
             return None
         try:
@@ -48,10 +52,14 @@ class Bundle:
             raise ValissError(f"valiss: creds seed: {exc}") from exc
 
     def format(self) -> str:
-        """Render the creds file for the bundle."""
-        out = f"{_TOKEN_BEGIN}\n{self.token.strip()}\n{_TOKEN_END}\n"
+        """Render the creds file content."""
+        out = ""
+        if self.account_token:
+            out += f"{_ACCOUNT_TOKEN_BEGIN}\n{self.account_token.strip()}\n{_ACCOUNT_TOKEN_END}\n"
         if self.user_token:
-            out += f"\n{_USER_TOKEN_BEGIN}\n{self.user_token.strip()}\n{_USER_TOKEN_END}\n"
+            if self.account_token:
+                out += "\n"
+            out += f"{_USER_TOKEN_BEGIN}\n{self.user_token.strip()}\n{_USER_TOKEN_END}\n"
         if self.seed:
             out += f"\n{_SEED_BEGIN}\n{self.seed.strip()}\n{_SEED_END}\n"
             out += (
@@ -61,18 +69,18 @@ class Bundle:
         return out
 
 
-def parse(contents: str) -> Bundle:
-    """Extract the bundle from a creds file's contents. The tenant token is
-    required; the user token and seed sections are optional."""
-    token, ok = _between(contents, _TOKEN_BEGIN, _TOKEN_END, "creds token")
-    if not ok:
-        raise ValissError(f'valiss: creds token: marker "{_TOKEN_BEGIN}" not found')
-    user_token, ok = _between(contents, _USER_TOKEN_BEGIN, _USER_TOKEN_END, "creds user token")
-    seed, ok_seed = _between(contents, _SEED_BEGIN, _SEED_END, "creds seed")
-    return Bundle(token=token, user_token=user_token if ok else "", seed=seed if ok_seed else "")
+def parse(contents: str) -> Creds:
+    """Extract the creds from a file's contents. Every section is optional
+    on its own, but at least one token must be present."""
+    account_token, _ = _between(contents, _ACCOUNT_TOKEN_BEGIN, _ACCOUNT_TOKEN_END, "creds token")
+    user_token, _ = _between(contents, _USER_TOKEN_BEGIN, _USER_TOKEN_END, "creds user token")
+    if not account_token and not user_token:
+        raise ValissError("valiss: creds: no token markers found")
+    seed, _ = _between(contents, _SEED_BEGIN, _SEED_END, "creds seed")
+    return Creds(account_token=account_token, user_token=user_token, seed=seed)
 
 
-def load(path: str) -> Bundle:
+def load(path: str) -> Creds:
     """Read and parse a creds file."""
     try:
         with open(path, encoding="utf-8") as f:

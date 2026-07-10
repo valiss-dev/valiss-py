@@ -1,21 +1,34 @@
-"""valiss: tenant authentication for gRPC and HTTP clients and services,
+"""valiss: client side of the valiss tenant authentication scheme,
 wire-compatible with github.com/mikluko/valiss.
 
-Client quick start:
+Quick start:
 
     from valiss import creds, httpauth
-    bundle = creds.load("alice.creds")
-    client = httpx.Client(auth=httpauth.Auth(bundle))
+    c = creds.load("alice.creds")
+    client = httpx.Client(auth=httpauth.Auth(c))
 
     from valiss import grpcauth
     channel_creds = grpc.composite_channel_credentials(
-        grpc.ssl_channel_credentials(), grpcauth.call_credentials(bundle))
+        grpc.ssl_channel_credentials(), grpcauth.call_credentials(c))
     channel = grpc.secure_channel(addr, channel_creds)
 
-Submodules mirror the Go package layout: token (issue/verify, request
-signing, Verifier, allowlist), creds (bundle file), nkeys (Ed25519 nkeys),
-httpauth and grpcauth (transport adapters). grpcauth requires the ``grpc``
-extra; httpauth.Auth requires the ``httpx`` extra.
+Minting short-lived user tokens from an account seed:
+
+    from valiss import creds, nkeys, token
+    account = creds.load("acme.creds")
+    user = nkeys.create_user()
+    user_token = token.issue_user(
+        account.signer(), "alice", user.public_key,
+        ttl=timedelta(minutes=15), bearer=True)
+    bearer = creds.Creds(
+        account_token=account.account_token, user_token=user_token)
+
+Submodules mirror the Go package layout: token (mint, request signing,
+per-token verify helpers), creds (creds file), nkeys (Ed25519 nkeys),
+httpauth and grpcauth (client transport adapters and their extension
+claims). grpcauth requires the ``grpc`` extra; httpauth.Auth requires the
+``httpx`` extra. Server-side chain verification stays with the Go
+implementation.
 """
 
 from .errors import ValissError

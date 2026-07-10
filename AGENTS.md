@@ -4,20 +4,27 @@ Guidance for AI coding agents working in this repository.
 
 ## What this is
 
-valiss-py is the Python port of [valiss](https://github.com/mikluko/valiss)
+valiss-py is the Python client for [valiss](https://github.com/mikluko/valiss)
 (expected as a sibling checkout at `../valiss`): tenant authentication for
 gRPC and HTTP services rooted in Ed25519 nkeys. It must stay wire-compatible
 with the Go implementation — creds files, tokens, request signatures, and
 header names interchange freely. The Go repository's AGENTS.md describes the
-scheme; this port mirrors its `pkg/` layout module for module.
+scheme.
+
+The port is deliberately partial: it mints tokens (all levels, including
+bearer user tokens) and attaches credentials to clients. Server-side chain
+verification — allowlists, epoch policy, extension enforcement, transport
+middleware — stays with the Go implementation. The `verify_*` helpers in
+`valiss.token` check a single token's signature/type/issuer for tooling and
+tests only; do not grow them into a Verifier.
 
 ## Commands
 
 ```sh
 uv sync --all-extras            # set up the venv (dev group installs grpc/httpx)
 uv run pytest                   # full suite, including Go interop
-uv run pytest tests/test_token.py -k verifier   # single file / match
-uv run examples/httpauth.py     # end-to-end demo (also examples/grpcauth.py)
+uv run pytest tests/test_token.py -k bearer   # single file / match
+uv run --group dev examples/issue_user.py     # minting + client wiring demo
 ```
 
 The interop tests (`tests/test_interop.py`) drive `go run` in
@@ -29,45 +36,48 @@ after any change to token encoding, nkeys, creds format, or request signing.
 
 Module map (Go package → Python module):
 
-- `pkg/token` → `valiss.token` — issue/verify (account and user level),
-  `sign_request`/`verify_request`, `Allowlist`, `Verifier`. Claims carry
-  `tenant_id` and, on chain requests, `user_id`. `verify` deliberately does
-  NOT check expiry or allowlist; `Verifier` layers those.
-- `pkg/creds` → `valiss.creds` — bundle file, byte-compatible markers.
+- root package → `valiss.token` — `issue_operator`/`issue_account`/
+  `issue_user` (Go `IssueOperator`/`Issue`/`IssueUser`; issue options become
+  keyword arguments: `ttl`, `expiry`, `not_before`, `epoch`, `bearer`,
+  `extensions`), `sign_request`/`verify_signature`, per-token `verify_*`
+  helpers, header constants.
+- `creds` → `valiss.creds` — creds file, byte-compatible markers.
 - nkeys (vendored subset) → `valiss.nkeys` — base32 + CRC16 encode/decode,
   operator/account/user key pairs over `cryptography` Ed25519.
-- `pkg/grpcauth` → `valiss.grpcauth` — `call_credentials` (client),
-  `Authenticator` server interceptor, `current_tenant()` (contextvar, the
-  `TenantFromContext` counterpart).
-- `pkg/httpauth` → `valiss.httpauth` — `credential_headers` /
-  `extract_credential` (framework-neutral), `Auth` (httpx hook).
+- `contrib/grpcauth` → `valiss.grpcauth` — `call_credentials` (client) and
+  the `grpc` extension claim (`Ext`). No server interceptor.
+- `contrib/httpauth` → `valiss.httpauth` — `credential_headers`, `Auth`
+  (httpx hook), and the `http` extension claim (`Ext`). No middleware.
 
-There is no CLI here; credential minting for production stays with the Go
-`valiss` CLI. `token.issue`/`issue_user` exist for servers, tests, and
-self-contained examples.
+There is no CLI here; operator/account credential minting for production
+stays with the Go `valiss` CLI. `token.issue_account`/`issue_operator`
+exist for tests and self-contained examples.
 
 ## Wire-compatibility invariants
 
 Do not change without changing the Go side in lockstep:
 
-- Headers: `valiss-tenant-token`, `valiss-user-token`,
-  `valiss-tenant-timestamp`, `valiss-tenant-signature` (gRPC metadata keys
-  and HTTP headers alike).
+- Headers: `valiss-account-token`, `valiss-user-token`, `valiss-timestamp`,
+  `valiss-signature` (gRPC metadata keys and HTTP headers alike).
 - Request signature: Ed25519 over the raw RFC3339Nano timestamp string,
   base64 (standard, padded). Verification binds the raw string as received;
   Python cannot re-render Go's nanosecond precision.
-- Tokens: NATS-style JWT, header `{"typ":"JWT","alg":"ed25519-nkey"}`,
-  base64url unpadded, custom claims `tenant_key` and `scopes` under `nats`,
-  jti = base32 SHA-512/256 of the standard claims with jti empty.
-- Creds file markers, including the asymmetric `-----BEGIN` / `------END`
+- Tokens: JWT header exactly `{"typ":"JWT","alg":"ed25519-nkey"}`,
+  base64url unpadded; payload field order jti, iat, iss, name, sub, exp,
+  nbf, valiss with empty fields omitted; the `valiss` section carries the
+  typed claim body (`type` operator/account/user, `epoch`, `bearer`,
+  `ext`); jti = unpadded base32 SHA-256 of the claims JSON with jti absent;
+  extension map keys serialize sorted.
+- Creds file markers (`VALISS ACCOUNT TOKEN`, `VALISS USER TOKEN`,
+  `VALISS SEED`), including the asymmetric `-----BEGIN` / `------END`
   dashes.
 
 ## Conventions
 
 - Error messages are prefixed `valiss:`; everything raises `ValissError`.
 - Key levels are strict: operator signs account tokens, account signs user
-  tokens, never the reverse; accounts always bind a key, only user tokens
-  may be keyless `bearer` ones.
+  tokens, never the reverse. Every token binds a subject key; a bearer
+  user token still binds one, the server just accepts it unsigned.
 - Tests inject time via the `now=` parameters; prefer that over sleeping.
 - grpcio and httpx are optional extras; `valiss.token`, `valiss.creds`, and
   `valiss.nkeys` must stay importable with only `cryptography` installed.

@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import grpc
 import pytest
@@ -7,125 +7,110 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from valiss import creds, grpcauth, nkeys, token
 
-TTL = timedelta(hours=1)
-CHECK = "/grpc.health.v1.Health/Check"
-WATCH = "/grpc.health.v1.Health/Watch"
+NOW = datetime(2026, 7, 10, 12, 0, 0, tzinfo=timezone.utc)
+TTL = timedelta(minutes=15)
 
 
-class _TenantCapture(grpc.ServerInterceptor):
-    """Records grpcauth.current_tenant() as seen from inside the handler."""
+@pytest.fixture(scope="module")
+def operator():
+    return nkeys.create_operator()
 
+
+@pytest.fixture(scope="module")
+def account():
+    return nkeys.create_account()
+
+
+@pytest.fixture(scope="module")
+def user():
+    return nkeys.create_user()
+
+
+@pytest.fixture(scope="module")
+def user_creds(operator, account, user):
+    return creds.Creds(
+        account_token=token.issue_account(operator, "acme", account.public_key, ttl=TTL, now=NOW),
+        user_token=token.issue_user(account, "alice", user.public_key, ttl=TTL, now=NOW),
+        seed=user.seed,
+    )
+
+
+class _Capture:
     def __init__(self):
-        self.claims = []
+        self.metadata = None
+        self.error = None
+
+    def __call__(self, metadata, error):
+        self.metadata = dict(metadata)
+        self.error = error
+
+
+def test_plugin_metadata_signing(user_creds, user):
+    plugin = grpcauth._CredentialsPlugin(user_creds, now=lambda: NOW)
+    cb = _Capture()
+    plugin(None, cb)
+    assert cb.error is None
+    assert cb.metadata[token.HEADER_ACCOUNT_TOKEN] == user_creds.account_token
+    assert cb.metadata[token.HEADER_USER_TOKEN] == user_creds.user_token
+    token.verify_signature(
+        user.public_key,
+        cb.metadata[token.HEADER_TIMESTAMP],
+        cb.metadata[token.HEADER_SIGNATURE],
+        NOW,
+    )
+
+
+def test_plugin_metadata_bearer(operator, account, user):
+    c = creds.Creds(
+        account_token=token.issue_account(operator, "acme", account.public_key, ttl=TTL, now=NOW),
+        user_token=token.issue_user(
+            account, "bob", user.public_key, ttl=TTL, bearer=True, now=NOW
+        ),
+    )
+    cb = _Capture()
+    grpcauth._CredentialsPlugin(c, now=None)(None, cb)
+    assert cb.error is None
+    assert token.HEADER_TIMESTAMP not in cb.metadata
+    assert token.HEADER_SIGNATURE not in cb.metadata
+
+
+class _MetadataCapture(grpc.ServerInterceptor):
+    def __init__(self):
+        self.metadata: dict[str, str] = {}
 
     def intercept_service(self, continuation, handler_call_details):
-        handler = continuation(handler_call_details)
-        if handler is None or handler.request_streaming or handler.response_streaming:
-            return handler
-        inner = handler.unary_unary
-
-        def behavior(request, context):
-            self.claims.append(grpcauth.current_tenant())
-            return inner(request, context)
-
-        return grpc.unary_unary_rpc_method_handler(
-            behavior,
-            request_deserializer=handler.request_deserializer,
-            response_serializer=handler.response_serializer,
-        )
+        for key, value in handler_call_details.invocation_metadata:
+            self.metadata.setdefault(key, value)
+        return continuation(handler_call_details)
 
 
-@pytest.fixture
-def env():
-    operator = nkeys.create_operator()
-    account = nkeys.create_account()
-    tok = token.issue(
-        operator,
-        "acme",
-        account.public_key,
-        [grpcauth.scope_for_method(CHECK), grpcauth.scope_for_method(WATCH)],
-        TTL,
-    )
-    issued = token.verify(tok, operator.public_key)
-
-    capture = _TenantCapture()
-    auth = grpcauth.Authenticator(
-        token.Verifier(operator.public_key, token.StaticAllowlist(issued.id)),
-        method_scope=True,
-    )
-    server = grpc.server(
-        thread_pool=ThreadPoolExecutor(max_workers=4), interceptors=[auth, capture]
-    )
+def test_call_credentials_end_to_end(user_creds, user):
+    capture = _MetadataCapture()
+    server = grpc.server(ThreadPoolExecutor(max_workers=2), interceptors=[capture])
     health_pb2_grpc.add_HealthServicer_to_server(health.HealthServicer(), server)
-    port = server.add_secure_port("127.0.0.1:0", grpc.local_server_credentials())
+    port = server.add_secure_port("localhost:0", grpc.local_server_credentials())
     server.start()
-    yield {
-        "port": port,
-        "token": tok,
-        "account": account,
-        "capture": capture,
-    }
-    server.stop(grace=None)
-
-
-def _channel(port, bundle=None):
-    if bundle is None:
-        return grpc.secure_channel(f"127.0.0.1:{port}", grpc.local_channel_credentials())
-    channel_creds = grpc.composite_channel_credentials(
-        grpc.local_channel_credentials(), grpcauth.call_credentials(bundle)
+    try:
+        channel_creds = grpc.composite_channel_credentials(
+            grpc.local_channel_credentials(),
+            grpcauth.call_credentials(user_creds, now=lambda: NOW),
+        )
+        with grpc.secure_channel(f"localhost:{port}", channel_creds) as channel:
+            stub = health_pb2_grpc.HealthStub(channel)
+            stub.Check(health_pb2.HealthCheckRequest(), timeout=5)
+    finally:
+        server.stop(None)
+    assert capture.metadata[token.HEADER_ACCOUNT_TOKEN] == user_creds.account_token
+    assert capture.metadata[token.HEADER_USER_TOKEN] == user_creds.user_token
+    token.verify_signature(
+        user.public_key,
+        capture.metadata[token.HEADER_TIMESTAMP],
+        capture.metadata[token.HEADER_SIGNATURE],
+        NOW,
     )
-    return grpc.secure_channel(f"127.0.0.1:{port}", channel_creds)
 
 
-def test_account_call(env):
-    with _channel(env["port"], creds.Bundle(token=env["token"], seed=env["account"].seed)) as ch:
-        resp = health_pb2_grpc.HealthStub(ch).Check(health_pb2.HealthCheckRequest())
-    assert resp.status == health_pb2.HealthCheckResponse.SERVING
-    claims = env["capture"].claims[-1]
-    assert claims is not None
-    assert claims.tenant_id == "acme"
-    assert claims.user_id == ""
-
-
-def test_user_chain_and_scope_denial(env):
-    user = nkeys.create_user()
-    user_tok = token.issue_user(
-        env["account"], "alice", user.public_key, [grpcauth.scope_for_method(CHECK)], TTL
-    )
-    bundle = creds.Bundle(token=env["token"], user_token=user_tok, seed=user.seed)
-    with _channel(env["port"], bundle) as ch:
-        stub = health_pb2_grpc.HealthStub(ch)
-        resp = stub.Check(health_pb2.HealthCheckRequest())
-        assert resp.status == health_pb2.HealthCheckResponse.SERVING
-        claims = env["capture"].claims[-1]
-        assert claims.tenant_id == "acme"
-        assert claims.user_id == "alice"
-
-        # Watch is delegated to the account, not to alice.
-        with pytest.raises(grpc.RpcError) as excinfo:
-            next(stub.Watch(health_pb2.HealthCheckRequest()))
-        assert excinfo.value.code() == grpc.StatusCode.PERMISSION_DENIED
-
-
-def test_missing_credential(env):
-    with _channel(env["port"]) as ch:
-        with pytest.raises(grpc.RpcError) as excinfo:
-            health_pb2_grpc.HealthStub(ch).Check(health_pb2.HealthCheckRequest())
-    assert excinfo.value.code() == grpc.StatusCode.UNAUTHENTICATED
-    assert "missing tenant credential" in excinfo.value.details()
-
-
-def test_wrong_signer_rejected(env):
-    imposter = nkeys.create_account()
-    with _channel(env["port"], creds.Bundle(token=env["token"], seed=imposter.seed)) as ch:
-        with pytest.raises(grpc.RpcError) as excinfo:
-            health_pb2_grpc.HealthStub(ch).Check(health_pb2.HealthCheckRequest())
-    assert excinfo.value.code() == grpc.StatusCode.UNAUTHENTICATED
-
-
-def test_bearer_bundle_without_bearer_scope_rejected(env):
-    with _channel(env["port"], creds.Bundle(token=env["token"])) as ch:
-        with pytest.raises(grpc.RpcError) as excinfo:
-            health_pb2_grpc.HealthStub(ch).Check(health_pb2.HealthCheckRequest())
-    assert excinfo.value.code() == grpc.StatusCode.UNAUTHENTICATED
-    assert "bearer" in excinfo.value.details()
+def test_ext_payload():
+    ext = grpcauth.Ext(methods=["/example.v1.Widgets/*"])
+    assert ext.extension_name() == "grpc"
+    assert ext.extension_payload() == {"methods": ["/example.v1.Widgets/*"]}

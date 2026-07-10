@@ -2,7 +2,7 @@
 // against Python-produced credentials and vice versa. Driven by
 // tests/test_interop.py.
 //
-//	go run . mint    # mint keys, tokens, and creds bundles; JSON to stdout
+//	go run . mint    # mint keys, tokens, and creds files; JSON to stdout
 //	go run . verify  # verify a credential read as JSON from stdin
 package main
 
@@ -15,8 +15,8 @@ import (
 
 	"github.com/nats-io/nkeys"
 
-	"github.com/mikluko/valiss/pkg/creds"
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
+	"github.com/mikluko/valiss/creds"
 )
 
 type minted struct {
@@ -24,21 +24,23 @@ type minted struct {
 	JTI          string `json:"jti"`
 	AccountCreds string `json:"account_creds"`
 	UserCreds    string `json:"user_creds"`
+	BearerCreds  string `json:"bearer_creds"`
 }
 
 type credential struct {
-	OperatorPub string `json:"operator_pub"`
-	JTI         string `json:"jti"`
-	Token       string `json:"token"`
-	UserToken   string `json:"user_token"`
-	Timestamp   string `json:"timestamp"`
-	Signature   string `json:"signature"`
+	OperatorPub  string `json:"operator_pub"`
+	JTI          string `json:"jti"`
+	AccountToken string `json:"account_token"`
+	UserToken    string `json:"user_token"`
+	Timestamp    string `json:"timestamp"`
+	Signature    string `json:"signature"`
 }
 
 type verified struct {
-	TenantID string   `json:"tenant_id"`
-	UserID   string   `json:"user_id"`
-	Scopes   []string `json:"scopes"`
+	Account string                     `json:"account"`
+	User    string                     `json:"user,omitempty"`
+	Bearer  bool                       `json:"bearer,omitempty"`
+	UserExt map[string]json.RawMessage `json:"user_ext,omitempty"`
 }
 
 func main() {
@@ -72,19 +74,27 @@ func mint() {
 	check(err)
 	userSeed, err := user.Seed()
 	check(err)
+	bearerUser, err := nkeys.CreateUser()
+	check(err)
+	bearerPub, err := bearerUser.PublicKey()
+	check(err)
 
-	tok, err := token.Issue(operator, "acme", accountPub, []string{"call:/v1/*"}, time.Hour)
+	tok, err := valiss.Issue(operator, "acme", accountPub, valiss.WithTTL(time.Hour))
 	check(err)
-	claims, err := token.Verify(tok, operatorPub)
+	claims, err := valiss.VerifyAccount(tok, operatorPub)
 	check(err)
-	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/v1/whoami"}, time.Hour)
+	userTok, err := valiss.IssueUser(account, "alice", userPub, valiss.WithTTL(time.Hour))
+	check(err)
+	bearerTok, err := valiss.IssueUser(account, "bob", bearerPub,
+		valiss.WithTTL(15*time.Minute), valiss.WithBearer())
 	check(err)
 
 	out := minted{
 		OperatorPub:  operatorPub,
 		JTI:          claims.ID,
-		AccountCreds: creds.Format(creds.Bundle{Token: tok, Seed: accountSeed}),
-		UserCreds:    creds.Format(creds.Bundle{Token: tok, UserToken: userTok, Seed: userSeed}),
+		AccountCreds: creds.Format(creds.Creds{AccountToken: tok, Seed: accountSeed}),
+		UserCreds:    creds.Format(creds.Creds{AccountToken: tok, UserToken: userTok, Seed: userSeed}),
+		BearerCreds:  creds.Format(creds.Creds{AccountToken: tok, UserToken: bearerTok}),
 	}
 	check(json.NewEncoder(os.Stdout).Encode(out))
 }
@@ -93,22 +103,24 @@ func verify() {
 	var in credential
 	check(json.NewDecoder(os.Stdin).Decode(&in))
 
-	verifier := token.NewVerifier(in.OperatorPub, token.NewStaticAllowlist(in.JTI))
-	claims, err := verifier.VerifyCredential(token.Credential{
-		Token:     in.Token,
-		UserToken: in.UserToken,
-		Timestamp: in.Timestamp,
-		Signature: in.Signature,
+	verifier := valiss.NewVerifier(in.OperatorPub, valiss.NewStaticAllowlist(in.JTI))
+	id, err := verifier.VerifyRequest(valiss.Request{
+		AccountToken: in.AccountToken,
+		UserToken:    in.UserToken,
+		Timestamp:    in.Timestamp,
+		Signature:    in.Signature,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	check(json.NewEncoder(os.Stdout).Encode(verified{
-		TenantID: claims.TenantID,
-		UserID:   claims.UserID,
-		Scopes:   claims.Scopes,
-	}))
+	out := verified{Account: id.Account.Name}
+	if id.User != nil {
+		out.User = id.User.Name
+		out.Bearer = id.User.Bearer
+		out.UserExt = id.User.Ext
+	}
+	check(json.NewEncoder(os.Stdout).Encode(out))
 }
 
 func check(err error) {
