@@ -91,18 +91,30 @@ def load(path: str) -> Creds:
 
 
 def _between(contents: str, begin: str, end: str, what: str) -> tuple[str, bool]:
-    """First non-empty line strictly between a begin and end marker. The
-    bool is False when the begin marker is absent; a present but empty or
-    unclosed section is an error."""
+    """Single non-empty line strictly between a begin and end marker. The
+    bool is False when the begin marker is absent. A present section is
+    strict: it must hold exactly one payload line followed by the end
+    marker. An empty, unclosed, or multi-line section is an error, so a
+    truncated or mangled creds file fails here rather than downstream as a
+    confusing cryptographic error."""
     inside = False
+    payload = ""
     for line in contents.splitlines():
         line = line.strip()
         if line == begin:
             inside = True
-        elif inside and line == end:
-            raise ValissError(f'valiss: {what}: no content before "{end}"')
-        elif inside and line:
-            return line, True
+        elif not inside:
+            continue
+        elif line == end:
+            if not payload:
+                raise ValissError(f'valiss: {what}: no content before "{end}"')
+            return payload, True
+        elif not line:
+            continue
+        elif not payload:
+            payload = line
+        else:
+            raise ValissError(f'valiss: {what}: unexpected content in "{begin}" section')
     if inside:
         raise ValissError(f'valiss: {what}: marker "{begin}" not closed')
     return "", False

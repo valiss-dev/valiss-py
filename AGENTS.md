@@ -58,10 +58,15 @@ exist for tests and self-contained examples.
 Do not change without changing the Go side in lockstep:
 
 - Headers: `valiss-account-token`, `valiss-user-token`, `valiss-timestamp`,
-  `valiss-signature` (gRPC metadata keys and HTTP headers alike).
-- Request signature: Ed25519 over the raw RFC3339Nano timestamp string,
-  base64 (standard, padded). Verification binds the raw string as received;
-  Python cannot re-render Go's nanosecond precision.
+  `valiss-signature`, `valiss-nonce` (gRPC metadata keys and HTTP headers
+  alike).
+- Request signature: Ed25519 over
+  `<RFC3339Nano timestamp>\n<hex sha256(context)>`, base64 (standard,
+  padded). The context is the transport's canonical request bytes:
+  `http\n<method>\n<host>\n<path>\n<nonce>` for HTTP,
+  `grpc\n<full method>\n<nonce>` for gRPC; the nonce is empty unless the
+  server runs a replay cache. Verification embeds the raw timestamp string
+  as received; Python cannot re-render Go's nanosecond precision.
 - Tokens: JWT header exactly `{"typ":"JWT","alg":"ed25519-nkey"}`,
   base64url unpadded; payload field order jti, iat, iss, name, sub, exp,
   nbf, valiss with empty fields omitted; the `valiss` section carries the

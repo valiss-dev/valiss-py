@@ -45,17 +45,42 @@ class _Capture:
         self.error = error
 
 
+class _FakeContext:
+    service_url = "https://localhost:50051/grpc.health.v1.Health"
+    method_name = "Check"
+
+
+FULL_METHOD = "/grpc.health.v1.Health/Check"
+
+
 def test_plugin_metadata_signing(user_creds, user):
-    plugin = grpcauth._CredentialsPlugin(user_creds, now=lambda: NOW)
+    plugin = grpcauth._CredentialsPlugin(user_creds, nonce=False, now=lambda: NOW)
     cb = _Capture()
-    plugin(None, cb)
+    plugin(_FakeContext(), cb)
     assert cb.error is None
     assert cb.metadata[token.HEADER_ACCOUNT_TOKEN] == user_creds.account_token
     assert cb.metadata[token.HEADER_USER_TOKEN] == user_creds.user_token
+    assert token.HEADER_NONCE not in cb.metadata
     token.verify_signature(
         user.public_key,
         cb.metadata[token.HEADER_TIMESTAMP],
         cb.metadata[token.HEADER_SIGNATURE],
+        grpcauth.method_context(FULL_METHOD),
+        NOW,
+    )
+
+
+def test_plugin_metadata_nonce(user_creds, user):
+    plugin = grpcauth._CredentialsPlugin(user_creds, nonce=True, now=lambda: NOW)
+    cb = _Capture()
+    plugin(_FakeContext(), cb)
+    assert cb.error is None
+    nonce = cb.metadata[token.HEADER_NONCE]
+    token.verify_signature(
+        user.public_key,
+        cb.metadata[token.HEADER_TIMESTAMP],
+        cb.metadata[token.HEADER_SIGNATURE],
+        grpcauth.method_context(FULL_METHOD, nonce),
         NOW,
     )
 
@@ -68,7 +93,7 @@ def test_plugin_metadata_bearer(operator, account, user):
         ),
     )
     cb = _Capture()
-    grpcauth._CredentialsPlugin(c, now=None)(None, cb)
+    grpcauth._CredentialsPlugin(c, nonce=False, now=None)(_FakeContext(), cb)
     assert cb.error is None
     assert token.HEADER_TIMESTAMP not in cb.metadata
     assert token.HEADER_SIGNATURE not in cb.metadata
@@ -102,10 +127,13 @@ def test_call_credentials_end_to_end(user_creds, user):
         server.stop(None)
     assert capture.metadata[token.HEADER_ACCOUNT_TOKEN] == user_creds.account_token
     assert capture.metadata[token.HEADER_USER_TOKEN] == user_creds.user_token
+    # The server side reconstructs the context from the handler's full
+    # method, exactly what the interceptor sees.
     token.verify_signature(
         user.public_key,
         capture.metadata[token.HEADER_TIMESTAMP],
         capture.metadata[token.HEADER_SIGNATURE],
+        grpcauth.method_context(FULL_METHOD),
         NOW,
     )
 

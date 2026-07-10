@@ -34,6 +34,8 @@ type credential struct {
 	UserToken    string `json:"user_token"`
 	Timestamp    string `json:"timestamp"`
 	Signature    string `json:"signature"`
+	Context      string `json:"context"`
+	Nonce        string `json:"nonce"`
 }
 
 type verified struct {
@@ -109,6 +111,8 @@ func verify() {
 		UserToken:    in.UserToken,
 		Timestamp:    in.Timestamp,
 		Signature:    in.Signature,
+		Context:      []byte(in.Context),
+		Nonce:        in.Nonce,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

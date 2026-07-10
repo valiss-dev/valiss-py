@@ -183,9 +183,30 @@ def test_wire_shape(account, user):
 
 
 def test_sign_and_verify_request(user):
-    timestamp, signature = token.sign_request(user, NOW)
-    token.verify_signature(user.public_key, timestamp, signature, NOW)
+    context = b"http\nGET\napi.example.com\n/v1/whoami\n"
+    timestamp, signature = token.sign_request(user, context, NOW)
+    token.verify_signature(user.public_key, timestamp, signature, context, NOW)
     with pytest.raises(ValissError, match="skew window"):
-        token.verify_signature(user.public_key, timestamp, signature, NOW + timedelta(minutes=5))
+        token.verify_signature(
+            user.public_key, timestamp, signature, context, NOW + timedelta(minutes=5)
+        )
     with pytest.raises(ValissError, match="signature verification failed"):
-        token.verify_signature(nkeys.create_user().public_key, timestamp, signature, NOW)
+        token.verify_signature(nkeys.create_user().public_key, timestamp, signature, context, NOW)
+    # The signature is bound to the request context: different context bytes
+    # fail even with a valid timestamp.
+    with pytest.raises(ValissError, match="signature verification failed"):
+        token.verify_signature(
+            user.public_key, timestamp, signature, b"http\nDELETE\napi.example.com\n/v1/all\n", NOW
+        )
+
+
+def test_sign_request_empty_context(user):
+    timestamp, signature = token.sign_request(user, now=NOW)
+    token.verify_signature(user.public_key, timestamp, signature, now=NOW)
+
+
+def test_new_nonce():
+    a, b = token.new_nonce(), token.new_nonce()
+    assert a != b
+    assert len(a) == 32
+    int(a, 16)

@@ -42,6 +42,4 @@ jobs:
 
     - name: Run examples
       working-directory: valiss-py
-      run: |
-        uv run examples/httpauth.py
-        uv run examples/grpcauth.py
+      run: uv run --group dev examples/issue_user.py

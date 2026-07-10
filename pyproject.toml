@@ -1,6 +1,6 @@
 [project]
 name = "valiss"
-version = "0.2.0"
+version = "0.3.0"
 description = "Client library for valiss tenant authentication: nkey-signed HTTP and gRPC requests"
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -15,7 +15,9 @@ The scheme is a three-level chain of Ed25519 nkeys:
   user token authenticates by the token alone, without per-request
   signatures.
 - The subject signs every request with its nkey over an RFC3339Nano
-  timestamp (bearer tokens excepted).
+  timestamp bound to the transport's canonical request context (bearer
+  tokens excepted), so a captured signature cannot authorize a different
+  operation.
 
 Tokens are nkey-signed JWTs (``ed25519-nkey`` algorithm); the ``valiss``
 payload section carries the scheme's typed claim bodies. Authorization
@@ -30,6 +32,7 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -44,6 +47,7 @@ HEADER_ACCOUNT_TOKEN = "valiss-account-token"
 HEADER_USER_TOKEN = "valiss-user-token"
 HEADER_TIMESTAMP = "valiss-timestamp"
 HEADER_SIGNATURE = "valiss-signature"
+HEADER_NONCE = "valiss-nonce"
 
 # Bounds request-timestamp drift and token-expiry slack.
 DEFAULT_SKEW = timedelta(minutes=2)
@@ -466,16 +470,35 @@ def issuer_of(token: str) -> str:
     return _decode_payload(token).get("iss", "")
 
 
-def sign_request(subject: nkeys.KeyPair, now: datetime | None = None) -> tuple[str, str]:
-    """Produce the timestamp and base64 signature a subject attaches to a
-    request, signing with its nkey seed.
+def new_nonce() -> str:
+    """Fresh random per-request nonce (128 bits, hex). Client transports use
+    it when the server has a replay cache; the transport folds it into the
+    signed request context."""
+    return os.urandom(16).hex()
 
-    The signed payload is just the RFC3339Nano timestamp: the token binds
-    the subject key, the allowlist bounds validity, and the skew window
-    bounds replay.
+
+def _signed_payload(timestamp: str, context: bytes) -> bytes:
+    """Canonical byte string a subject signs per request: the timestamp
+    bound to a hash of the request context. Binding the context (the
+    transport's canonical method/path) stops a captured signature from
+    authorizing a different operation; the timestamp and skew window bound
+    replay of the same operation."""
+    return f"{timestamp}\n{hashlib.sha256(context).hexdigest()}".encode()
+
+
+def sign_request(
+    subject: nkeys.KeyPair, context: bytes = b"", now: datetime | None = None
+) -> tuple[str, str]:
+    """Produce the timestamp and base64 signature a subject attaches to a
+    request, signing the timestamp bound to the request context with its
+    nkey seed.
+
+    context is the transport's canonical description of the request (e.g.
+    method and path); the server must reconstruct identical bytes. An empty
+    context binds nothing beyond the timestamp.
     """
     timestamp = _rfc3339nano(now or _now())
-    signature = base64.b64encode(subject.sign(timestamp.encode())).decode("ascii")
+    signature = base64.b64encode(subject.sign(_signed_payload(timestamp, context))).decode("ascii")
     return timestamp, signature
 
 
@@ -483,11 +506,13 @@ def verify_signature(
     subject_pub_key: str,
     timestamp: str,
     signature: str,
+    context: bytes = b"",
     now: datetime | None = None,
     skew: timedelta = DEFAULT_SKEW,
 ) -> None:
-    """Check a request signature against the subject public key and bound
-    the timestamp to a symmetric skew window around now."""
+    """Check a request signature against the subject public key, bound the
+    timestamp to a symmetric skew window around now, and confirm it was
+    signed over the request context (see sign_request)."""
     now = now or _now()
     try:
         ts = datetime.fromisoformat(timestamp)
@@ -506,10 +531,10 @@ def verify_signature(
         pub = nkeys.from_public_key(subject_pub_key)
     except ValissError as exc:
         raise ValissError(f"valiss: bad subject public key: {exc}") from exc
-    # Verified over the raw timestamp string: canonical RFC3339Nano
-    # round-trips exactly, and Python cannot re-render Go's nanosecond
-    # precision.
+    # The payload embeds the raw timestamp string as received: canonical
+    # RFC3339Nano round-trips exactly, and Python cannot re-render Go's
+    # nanosecond precision.
     try:
-        pub.verify(timestamp.encode(), raw_sig)
+        pub.verify(_signed_payload(timestamp, context), raw_sig)
     except ValissError as exc:
         raise ValissError("valiss: request signature verification failed") from exc

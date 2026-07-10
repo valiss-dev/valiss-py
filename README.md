@@ -13,8 +13,10 @@ interchange freely between the two.
 - An account delegates: it signs **user** tokens with its account seed. A
   **bearer** user token authenticates by the token alone, without
   per-request signatures.
-- The client **signs every request** with its nkey over a timestamp (bearer
-  tokens excepted); the Go server verifies the chain up to the pinned
+- The client **signs every request** with its nkey over a timestamp bound
+  to the request context (method/host/path for HTTP, full method for gRPC;
+  bearer tokens excepted), so a captured signature cannot authorize a
+  different operation. The Go server verifies the chain up to the pinned
   operator key.
 
 This port covers the client side: minting short-lived user tokens from an
@@ -78,8 +80,11 @@ client = httpx.Client(auth=httpauth.Auth(c))
 client.get("https://api.example.com/v1/whoami")
 ```
 
-Any other HTTP client works through `httpauth.credential_headers(c)`; build
-a fresh header set per request.
+If the server runs a replay cache, enable per-request nonces:
+`httpauth.Auth(c, nonce=True)`. Any other HTTP client works through
+`httpauth.credential_headers(c, method, host, path)`; the signature is
+bound to those values, so pass the real ones and build a fresh header set
+per request.
 
 ## Client (gRPC)
 
@@ -94,7 +99,10 @@ channel = grpc.secure_channel("api.example.com:443", channel_creds)
 ```
 
 gRPC sends call credentials only over secure channels; for local plaintext
-development compose with `grpc.local_channel_credentials()` instead.
+development compose with `grpc.local_channel_credentials()` instead. The
+per-call signature is bound to the called method;
+`grpcauth.call_credentials(c, nonce=True)` adds per-call nonces for
+replay-cache servers.
 
 ## Layout
 

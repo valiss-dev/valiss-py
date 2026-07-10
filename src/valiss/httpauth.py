@@ -55,13 +55,32 @@ class Ext:
         return payload
 
 
+def request_context(method: str, host: str, path: str, nonce: str = "") -> bytes:
+    """Canonical request-context bytes the signature is bound to: method,
+    host, path, and the per-request nonce. The client and the Go server
+    middleware must derive identical bytes, so the host is the request Host
+    and the query is excluded. Method and path are matched exactly. The
+    nonce is empty when replay suppression is not in use."""
+    return f"http\n{method}\n{host}\n{path}\n{nonce}".encode()
+
+
 def credential_headers(
-    c: creds.Creds, *, now: Callable[[], datetime] | None = None
+    c: creds.Creds,
+    method: str = "",
+    host: str = "",
+    path: str = "",
+    *,
+    nonce: str = "",
+    now: Callable[[], datetime] | None = None,
 ) -> dict[str, str]:
     """Headers a client attaches to one request: the creds' tokens and,
-    when the creds hold a seed, a fresh signature. Creds without a seed are
-    bearer credentials: the server accepts them only when the effective
-    token is a bearer user token.
+    when the creds hold a seed, a fresh signature bound to the request's
+    method, host, and path. Creds without a seed are bearer credentials:
+    the server accepts them only when the effective token is a bearer user
+    token.
+
+    Pass ``nonce=token.new_nonce()`` when the server has a replay cache;
+    the nonce is sent in its own header and folded into the signature.
 
     Signatures are single-use by freshness: build a new header set per
     request.
@@ -73,7 +92,13 @@ def credential_headers(
         headers[token.HEADER_USER_TOKEN] = c.user_token
     signer = c.signer()
     if signer is not None:
-        timestamp, signature = token.sign_request(signer, now() if now is not None else None)
+        if nonce:
+            headers[token.HEADER_NONCE] = nonce
+        timestamp, signature = token.sign_request(
+            signer,
+            request_context(method, host, path, nonce),
+            now() if now is not None else None,
+        )
         headers[token.HEADER_TIMESTAMP] = timestamp
         headers[token.HEADER_SIGNATURE] = signature
     return headers
@@ -89,18 +114,38 @@ if httpx is not None:
 
     class Auth(httpx.Auth):
         """httpx auth hook that attaches the creds' tokens and, when the
-        creds hold a seed, a fresh per-request signature.
+        creds hold a seed, a fresh per-request signature bound to the
+        request's method, host, and path.
 
-        Pass as ``httpx.Client(auth=Auth(creds_))``.
+        Pass as ``httpx.Client(auth=Auth(creds_))``. ``nonce=True`` attaches
+        a fresh per-request nonce (folded into the signature) so a server
+        with a replay cache can suppress replays; enable it whenever the
+        server has one.
         """
 
-        def __init__(self, c: creds.Creds, *, now: Callable[[], datetime] | None = None):
+        def __init__(
+            self,
+            c: creds.Creds,
+            *,
+            nonce: bool = False,
+            now: Callable[[], datetime] | None = None,
+        ):
             c.signer()  # fail fast on a malformed seed
             self._creds = c
+            self._nonce = nonce
             self._now = now
 
         def auth_flow(self, request: httpx.Request) -> Iterator[httpx.Request]:
-            request.headers.update(credential_headers(self._creds, now=self._now))
+            request.headers.update(
+                credential_headers(
+                    self._creds,
+                    request.method,
+                    request.headers.get("host", request.url.host),
+                    request.url.path,
+                    nonce=token.new_nonce() if self._nonce else "",
+                    now=self._now,
+                )
+            )
             yield request
 
 else:

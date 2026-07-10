@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from valiss import creds, httpauth, nkeys, token
+from valiss import ValissError, creds, httpauth, nkeys, token
 
 NOW = datetime(2026, 7, 10, 12, 0, 0, tzinfo=timezone.utc)
 TTL = timedelta(minutes=15)
@@ -34,11 +34,43 @@ def user_creds(operator, account, user):
 
 
 def test_credential_headers_signing(user_creds, user):
-    headers = httpauth.credential_headers(user_creds, now=lambda: NOW)
+    headers = httpauth.credential_headers(
+        user_creds, "GET", "api.example.com", "/v1/whoami", now=lambda: NOW
+    )
     assert headers[token.HEADER_ACCOUNT_TOKEN] == user_creds.account_token
     assert headers[token.HEADER_USER_TOKEN] == user_creds.user_token
+    assert token.HEADER_NONCE not in headers
+    context = httpauth.request_context("GET", "api.example.com", "/v1/whoami")
     token.verify_signature(
-        user.public_key, headers[token.HEADER_TIMESTAMP], headers[token.HEADER_SIGNATURE], NOW
+        user.public_key,
+        headers[token.HEADER_TIMESTAMP],
+        headers[token.HEADER_SIGNATURE],
+        context,
+        NOW,
+    )
+    # Bound to the request: a different method fails verification.
+    with pytest.raises(ValissError, match="signature verification failed"):
+        token.verify_signature(
+            user.public_key,
+            headers[token.HEADER_TIMESTAMP],
+            headers[token.HEADER_SIGNATURE],
+            httpauth.request_context("DELETE", "api.example.com", "/v1/whoami"),
+            NOW,
+        )
+
+
+def test_credential_headers_nonce(user_creds, user):
+    nonce = token.new_nonce()
+    headers = httpauth.credential_headers(
+        user_creds, "GET", "api.example.com", "/v1/whoami", nonce=nonce, now=lambda: NOW
+    )
+    assert headers[token.HEADER_NONCE] == nonce
+    token.verify_signature(
+        user.public_key,
+        headers[token.HEADER_TIMESTAMP],
+        headers[token.HEADER_SIGNATURE],
+        httpauth.request_context("GET", "api.example.com", "/v1/whoami", nonce),
+        NOW,
     )
 
 
@@ -56,7 +88,7 @@ def test_credential_headers_bearer(operator, account, user):
 
 def test_credential_headers_omit_missing_account_token(user_creds):
     c = creds.Creds(user_token=user_creds.user_token, seed=user_creds.seed)
-    headers = httpauth.credential_headers(c, now=lambda: NOW)
+    headers = httpauth.credential_headers(c, "GET", "api.example.com", "/", now=lambda: NOW)
     assert token.HEADER_ACCOUNT_TOKEN not in headers
     assert headers[token.HEADER_USER_TOKEN] == c.user_token
 
@@ -65,10 +97,15 @@ def test_httpx_auth_attaches_headers(user_creds, user):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers[token.HEADER_ACCOUNT_TOKEN] == user_creds.account_token
         assert request.headers[token.HEADER_USER_TOKEN] == user_creds.user_token
+        # The server reconstructs the context from the incoming request.
+        context = httpauth.request_context(
+            request.method, request.headers["host"], request.url.path
+        )
         token.verify_signature(
             user.public_key,
             request.headers[token.HEADER_TIMESTAMP],
             request.headers[token.HEADER_SIGNATURE],
+            context,
             NOW,
         )
         return httpx.Response(200)
@@ -76,6 +113,28 @@ def test_httpx_auth_attaches_headers(user_creds, user):
     client = httpx.Client(
         transport=httpx.MockTransport(handler),
         auth=httpauth.Auth(user_creds, now=lambda: NOW),
+    )
+    assert client.get("https://api.example.com/v1/whoami").status_code == 200
+
+
+def test_httpx_auth_nonce(user_creds, user):
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonce = request.headers[token.HEADER_NONCE]
+        context = httpauth.request_context(
+            request.method, request.headers["host"], request.url.path, nonce
+        )
+        token.verify_signature(
+            user.public_key,
+            request.headers[token.HEADER_TIMESTAMP],
+            request.headers[token.HEADER_SIGNATURE],
+            context,
+            NOW,
+        )
+        return httpx.Response(200)
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        auth=httpauth.Auth(user_creds, nonce=True, now=lambda: NOW),
     )
     assert client.get("https://api.example.com/v1/whoami").status_code == 200
 

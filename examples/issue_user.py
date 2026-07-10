@@ -54,12 +54,16 @@ def main() -> None:
     )
     bob = creds.Creds(account_token=account.account_token, user_token=bearer_token)
 
-    # HTTP: any client works through credential_headers; httpx takes the
-    # Auth hook directly:
+    # HTTP: any client works through credential_headers; the signature is
+    # bound to the request's method, host, and path, so pass the real ones.
+    # httpx takes the Auth hook directly and binds them automatically:
     #
     #     client = httpx.Client(auth=httpauth.Auth(alice))
-    print("alice signs each request:")
-    for key, value in httpauth.credential_headers(alice).items():
+    #     client = httpx.Client(auth=httpauth.Auth(alice, nonce=True))  # replay-cache server
+    print("alice signs each request, bound to GET api.example.com /v1/whoami:")
+    for key, value in httpauth.credential_headers(
+        alice, "GET", "api.example.com", "/v1/whoami"
+    ).items():
         print(f"  {key}: {value[:60]}{'...' if len(value) > 60 else ''}")
     print("bob is a bearer, token only:")
     for key, value in httpauth.credential_headers(bob).items():

@@ -50,8 +50,9 @@ def test_go_minted_credentials_verify_in_python():
     assert user.bearer is False
     # The Go-minted seed signs in Python and verifies against the token's
     # bound key.
-    timestamp, signature = token.sign_request(user_creds.signer(), now)
-    token.verify_signature(user.subject, timestamp, signature, now)
+    context = httpauth.request_context("GET", "api.example.com", "/v1/whoami")
+    timestamp, signature = token.sign_request(user_creds.signer(), context, now)
+    token.verify_signature(user.subject, timestamp, signature, context, now)
 
     bearer_creds = creds.parse(minted["bearer_creds"])
     bearer = token.verify_user(bearer_creds.user_token, account.subject)
@@ -81,7 +82,14 @@ def test_python_minted_signing_user_verifies_in_go():
         now=now,
     )
     user_creds = creds.Creds(account_token=account_tok, user_token=user_tok, seed=user.seed)
-    headers = httpauth.credential_headers(user_creds)
+    # Signature bound to the request context, plus a nonce as a client
+    # talking to a replay-cache server would send. The Go verifier must
+    # derive identical payload bytes from the same context.
+    nonce = token.new_nonce()
+    context = httpauth.request_context("GET", "api.example.com", "/v1/whoami", nonce)
+    headers = httpauth.credential_headers(
+        user_creds, "GET", "api.example.com", "/v1/whoami", nonce=nonce
+    )
 
     out = json.loads(
         _run(
@@ -94,6 +102,8 @@ def test_python_minted_signing_user_verifies_in_go():
                     "user_token": headers[token.HEADER_USER_TOKEN],
                     "timestamp": headers[token.HEADER_TIMESTAMP],
                     "signature": headers[token.HEADER_SIGNATURE],
+                    "context": context.decode(),
+                    "nonce": headers[token.HEADER_NONCE],
                 }
             ),
         )
@@ -147,7 +157,8 @@ def test_python_minted_account_credential_verifies_in_go():
         operator, "acme", account.public_key, ttl=timedelta(hours=1), now=now
     )
     jti = token.verify_account(account_tok, operator.public_key).id
-    timestamp, signature = token.sign_request(account, now)
+    context = grpcauth_method_context()
+    timestamp, signature = token.sign_request(account, context, now)
 
     out = json.loads(
         _run(
@@ -159,8 +170,15 @@ def test_python_minted_account_credential_verifies_in_go():
                     "account_token": account_tok,
                     "timestamp": timestamp,
                     "signature": signature,
+                    "context": context.decode(),
                 }
             ),
         )
     )
     assert out == {"account": "acme"}
+
+
+def grpcauth_method_context() -> bytes:
+    """gRPC-shaped context without importing grpcauth (grpcio is an extra
+    the core interop must not depend on); mirrors grpcauth.method_context."""
+    return b"grpc\n/example.v1.WidgetService/CreateWidget\n"
