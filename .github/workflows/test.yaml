@@ -54,3 +54,4 @@ jobs:
         uv run --group dev examples/verify_tooling.py
         uv run --group dev examples/http_server.py
         uv run --group dev examples/grpc_server.py
+        uv run --group dev examples/webhook.py

@@ -54,6 +54,16 @@ HEADER_TIMESTAMP = "valiss-timestamp"
 HEADER_SIGNATURE = "valiss-signature"
 HEADER_NONCE = "valiss-nonce"
 
+# Header names for the message-token (proof-of-origin) transports. The token
+# rides HEADER_MESSAGE_TOKEN; chain negotiation retransmits the provenance chain
+# in the detached HEADER_CHAIN_* headers after the receiver answers a chainless
+# token with HEADER_CHAIN: CHAIN_REQUIRED.
+HEADER_MESSAGE_TOKEN = "valiss-message-token"
+HEADER_CHAIN_ACCOUNT_TOKEN = "valiss-chain-account-token"
+HEADER_CHAIN_USER_TOKEN = "valiss-chain-user-token"
+HEADER_CHAIN = "valiss-chain"
+CHAIN_REQUIRED = "required"
+
 # Bounds request-timestamp drift and token-expiry slack.
 DEFAULT_SKEW = timedelta(minutes=2)
 
