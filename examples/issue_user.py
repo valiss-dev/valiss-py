@@ -7,7 +7,7 @@ are created in-process to stand in for the creds the valiss CLI ships.
 
 from datetime import timedelta
 
-from valiss import creds, grpcauth, httpauth, nkeys, token
+from valiss import creds, grpcauth, httpauth, message, nkeys, token
 
 
 def main() -> None:
@@ -78,6 +78,29 @@ def main() -> None:
     #     channel = grpc.secure_channel("api.example.com:443", channel_creds)
     grpcauth.call_credentials(alice)
     print("gRPC call credentials built for alice")
+
+    # Message token: a short-lived, self-signed proof of origin binding a
+    # payload to a destination. It embeds the provenance chain, so a receiver
+    # verifies it offline with only the operator public key — no per-request
+    # signature, no allowlist. A message token is a proof, never a credential.
+    body = b'{"event":"widget.created","id":42}'
+    proof = message.issue_message(
+        user,
+        audience="https://api.example.com/ingest",
+        checksum=message.checksum(body),
+        chain=(alice.account_token, alice.user_token),
+        ttl=message.DEFAULT_MESSAGE_TTL,
+    )
+    verified = message.verify_message(
+        proof,
+        operator.public_key,
+        audience="https://api.example.com/ingest",
+        payload=body,
+    )
+    print(
+        f"message proof from {verified.user.name}@{verified.account.name} "
+        f"verified offline for {verified.audience}"
+    )
 
 
 if __name__ == "__main__":

@@ -24,13 +24,20 @@ Minting short-lived user tokens from an account seed:
         account_token=account.account_token, user_token=user_token)
 
 Submodules mirror the Go package layout: token (mint, request signing,
-per-token verify helpers), creds (creds file), nkeys (Ed25519 nkeys),
+per-token verify helpers), message (per-message proof-of-origin tokens and
+their full-chain verification), creds (creds file), nkeys (Ed25519 nkeys),
 httpauth and grpcauth (client transport adapters and their extension
 claims). grpcauth requires the ``grpc`` extra; httpauth.Auth requires the
-``httpx`` extra. Server-side chain verification stays with the Go
-implementation.
+``httpx`` extra. Server-side request-chain verification (allowlist, epoch
+policy, replay) stays with the Go implementation.
+
+Tokens, creds files, and request signatures each carry their own wire-format
+version. The current version is 1 (SPEC-1.md); it appears on the wire only as
+an integer, and a reader dispatches on it so a future version can coexist. On
+failure, :class:`ValissError` carries the spec §7 ``reason`` code (see
+:class:`Reason`) the failure reduces to.
 """
 
-from .errors import ValissError
+from .errors import Reason, ValissError
 
-__all__ = ["ValissError"]
+__all__ = ["Reason", "ValissError"]

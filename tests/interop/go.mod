@@ -1,10 +1,10 @@
-module github.com/mikluko/valiss-py/tests/interop
+module github.com/valiss-dev/valiss-py/tests/interop
 
 go 1.26.4
 
 require (
-	github.com/mikluko/valiss v0.0.0-00010101000000-000000000000
 	github.com/nats-io/nkeys v0.4.16
+	valiss.dev/valiss v0.12.0
 )
 
 require (
@@ -12,4 +12,4 @@ require (
 	golang.org/x/sys v0.45.0 // indirect
 )
 
-replace github.com/mikluko/valiss => ../../../valiss
+replace valiss.dev/valiss => ../../../valiss-go

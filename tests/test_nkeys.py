@@ -45,6 +45,19 @@ def test_seed_not_accepted_as_public():
         nkeys.from_public_key(nkeys.create_account().seed)
 
 
+def test_truncated_seed_rejected_as_valiss_error():
+    # A seed truncated below 32 bytes but with a recomputed CRC passes the
+    # checksum, so it must be caught by the length check and raise ValissError
+    # rather than a raw cryptography.ValueError callers do not catch.
+    raw = nkeys._b32decode(nkeys.create_user().seed)  # 2 prefix + 32 seed + 2 crc
+    truncated = raw[:-2][:-1]  # drop the crc, then one seed byte -> 31-byte seed
+    bad_seed = nkeys._b32encode(truncated + nkeys._crc16(truncated).to_bytes(2, "little"))
+    with pytest.raises(ValissError, match="seed length"):
+        nkeys.from_seed(bad_seed)
+    with pytest.raises(ValissError, match="seed length"):
+        nkeys.decode_seed(bad_seed)
+
+
 def test_public_not_accepted_as_seed():
     with pytest.raises(ValissError):
         nkeys.from_seed(nkeys.create_account().public_key)

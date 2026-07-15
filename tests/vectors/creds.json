@@ -1,0 +1,144 @@
+{
+  "spec": 1,
+  "cases": [
+    {
+      "id": "creds/account-level",
+      "desc": "account token plus account seed parses as account-level creds",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 1\n\n-----BEGIN VALISS ACCOUNT TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJJVFhBU1I3SFhXWlpGVzZRU1hTWVBBWEJFRjRPRlUzUjdOUzVST0ZXTzZRN1hSWjVXNUJBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJPQ1VRQU5ZNDNGTVNKRDdFNTJWSlEzR0FUT0RZVkEyWUpONk5UR0lHMzZIS1NPMlFJRFFRUllUTSIsIm5hbWUiOiJhY21lIiwic3ViIjoiQUNGU0RHM1pNN05HNTJQU0o2UURSWVg2UllTTENLRFY1VURaV0hTRENFRDZRTFdGWVpINEVHWFQiLCJ2YWxpc3MiOnsidHlwZSI6ImFjY291bnQifX0.zCIVDwVTQkO3FEDfPkITb2Os51b5H568-rxL-w1gyHXbRFITeDWnjb4K2AsYHBO4GDIS8S8BaXedF-qS8u8NAw\n------END VALISS ACCOUNT TOKEN------\n\n-----BEGIN VALISS SEED-----\nSAAOQP3V6WPJHPL55RZYGMFV54RLRTD4W3TLEZ4BOGPEGIGUUCARECGMY4\n------END VALISS SEED------\n\n************************* IMPORTANT *************************\nSeed lets anyone sign as this identity. Keep it secret.\n"
+      },
+      "expect": {
+        "ok": true,
+        "claims": {
+          "has_account": true,
+          "has_seed": true,
+          "has_user": false
+        }
+      }
+    },
+    {
+      "id": "creds/user-level",
+      "desc": "user token plus user seed parses as user-level creds",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 1\n\n-----BEGIN VALISS USER TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJGWkhSMlpFWkpBVzRBVVVNWkE0VktLWURCTUtINVNXVVVMSU40UUNWRFUyVFdBQjdYSDVBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJBQ0ZTREczWk03Tkc1MlBTSjZRRFJZWDZSWVNMQ0tEVjVVRFpXSFNEQ0VENlFMV0ZZWkg0RUdYVCIsIm5hbWUiOiJhbGljZSIsInN1YiI6IlVEUjRGT1VVTEVFRERBRFMyREdQNEQ3VFdOVE1DNFBGWldaQUVPNTc1TU1QRk5ES1ZETTJUS0dSIiwidmFsaXNzIjp7InR5cGUiOiJ1c2VyIn19.lgjd3ZJAYg-R1YnR152UNS3_mWvwBCF7b0wplIuKD69z656GUTZAeN-Bz4eP6pBV-mlGUYYx8hTfqGboVBpRDA\n------END VALISS USER TOKEN------\n\n-----BEGIN VALISS SEED-----\nSUANPK2WISHRP2IRCIEIMPHNKQOXE2JTDPHZ3WVHBYSNLI72A6IGVXOEJQ\n------END VALISS SEED------\n\n************************* IMPORTANT *************************\nSeed lets anyone sign as this identity. Keep it secret.\n"
+      },
+      "expect": {
+        "ok": true,
+        "claims": {
+          "has_account": false,
+          "has_seed": true,
+          "has_user": true
+        }
+      }
+    },
+    {
+      "id": "creds/bundle",
+      "desc": "account and user tokens plus a seed parse as a bundle",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 1\n\n-----BEGIN VALISS ACCOUNT TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJJVFhBU1I3SFhXWlpGVzZRU1hTWVBBWEJFRjRPRlUzUjdOUzVST0ZXTzZRN1hSWjVXNUJBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJPQ1VRQU5ZNDNGTVNKRDdFNTJWSlEzR0FUT0RZVkEyWUpONk5UR0lHMzZIS1NPMlFJRFFRUllUTSIsIm5hbWUiOiJhY21lIiwic3ViIjoiQUNGU0RHM1pNN05HNTJQU0o2UURSWVg2UllTTENLRFY1VURaV0hTRENFRDZRTFdGWVpINEVHWFQiLCJ2YWxpc3MiOnsidHlwZSI6ImFjY291bnQifX0.zCIVDwVTQkO3FEDfPkITb2Os51b5H568-rxL-w1gyHXbRFITeDWnjb4K2AsYHBO4GDIS8S8BaXedF-qS8u8NAw\n------END VALISS ACCOUNT TOKEN------\n\n-----BEGIN VALISS USER TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJGWkhSMlpFWkpBVzRBVVVNWkE0VktLWURCTUtINVNXVVVMSU40UUNWRFUyVFdBQjdYSDVBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJBQ0ZTREczWk03Tkc1MlBTSjZRRFJZWDZSWVNMQ0tEVjVVRFpXSFNEQ0VENlFMV0ZZWkg0RUdYVCIsIm5hbWUiOiJhbGljZSIsInN1YiI6IlVEUjRGT1VVTEVFRERBRFMyREdQNEQ3VFdOVE1DNFBGWldaQUVPNTc1TU1QRk5ES1ZETTJUS0dSIiwidmFsaXNzIjp7InR5cGUiOiJ1c2VyIn19.lgjd3ZJAYg-R1YnR152UNS3_mWvwBCF7b0wplIuKD69z656GUTZAeN-Bz4eP6pBV-mlGUYYx8hTfqGboVBpRDA\n------END VALISS USER TOKEN------\n\n-----BEGIN VALISS SEED-----\nSUANPK2WISHRP2IRCIEIMPHNKQOXE2JTDPHZ3WVHBYSNLI72A6IGVXOEJQ\n------END VALISS SEED------\n\n************************* IMPORTANT *************************\nSeed lets anyone sign as this identity. Keep it secret.\n"
+      },
+      "expect": {
+        "ok": true,
+        "claims": {
+          "has_account": true,
+          "has_seed": true,
+          "has_user": true
+        }
+      }
+    },
+    {
+      "id": "creds/bearer",
+      "desc": "tokens with no seed parse as bearer creds",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 1\n\n-----BEGIN VALISS ACCOUNT TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJJVFhBU1I3SFhXWlpGVzZRU1hTWVBBWEJFRjRPRlUzUjdOUzVST0ZXTzZRN1hSWjVXNUJBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJPQ1VRQU5ZNDNGTVNKRDdFNTJWSlEzR0FUT0RZVkEyWUpONk5UR0lHMzZIS1NPMlFJRFFRUllUTSIsIm5hbWUiOiJhY21lIiwic3ViIjoiQUNGU0RHM1pNN05HNTJQU0o2UURSWVg2UllTTENLRFY1VURaV0hTRENFRDZRTFdGWVpINEVHWFQiLCJ2YWxpc3MiOnsidHlwZSI6ImFjY291bnQifX0.zCIVDwVTQkO3FEDfPkITb2Os51b5H568-rxL-w1gyHXbRFITeDWnjb4K2AsYHBO4GDIS8S8BaXedF-qS8u8NAw\n------END VALISS ACCOUNT TOKEN------\n\n-----BEGIN VALISS USER TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJGWkhSMlpFWkpBVzRBVVVNWkE0VktLWURCTUtINVNXVVVMSU40UUNWRFUyVFdBQjdYSDVBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJBQ0ZTREczWk03Tkc1MlBTSjZRRFJZWDZSWVNMQ0tEVjVVRFpXSFNEQ0VENlFMV0ZZWkg0RUdYVCIsIm5hbWUiOiJhbGljZSIsInN1YiI6IlVEUjRGT1VVTEVFRERBRFMyREdQNEQ3VFdOVE1DNFBGWldaQUVPNTc1TU1QRk5ES1ZETTJUS0dSIiwidmFsaXNzIjp7InR5cGUiOiJ1c2VyIn19.lgjd3ZJAYg-R1YnR152UNS3_mWvwBCF7b0wplIuKD69z656GUTZAeN-Bz4eP6pBV-mlGUYYx8hTfqGboVBpRDA\n------END VALISS USER TOKEN------\n"
+      },
+      "expect": {
+        "ok": true,
+        "claims": {
+          "has_account": true,
+          "has_seed": false,
+          "has_user": true
+        }
+      }
+    },
+    {
+      "id": "creds/no-version-header",
+      "desc": "an absent version header reads as the current version",
+      "op": "parse_creds",
+      "input": {
+        "creds": "-----BEGIN VALISS ACCOUNT TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJJVFhBU1I3SFhXWlpGVzZRU1hTWVBBWEJFRjRPRlUzUjdOUzVST0ZXTzZRN1hSWjVXNUJBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJPQ1VRQU5ZNDNGTVNKRDdFNTJWSlEzR0FUT0RZVkEyWUpONk5UR0lHMzZIS1NPMlFJRFFRUllUTSIsIm5hbWUiOiJhY21lIiwic3ViIjoiQUNGU0RHM1pNN05HNTJQU0o2UURSWVg2UllTTENLRFY1VURaV0hTRENFRDZRTFdGWVpINEVHWFQiLCJ2YWxpc3MiOnsidHlwZSI6ImFjY291bnQifX0.zCIVDwVTQkO3FEDfPkITb2Os51b5H568-rxL-w1gyHXbRFITeDWnjb4K2AsYHBO4GDIS8S8BaXedF-qS8u8NAw\n------END VALISS ACCOUNT TOKEN------\n\n-----BEGIN VALISS SEED-----\nSAAOQP3V6WPJHPL55RZYGMFV54RLRTD4W3TLEZ4BOGPEGIGUUCARECGMY4\n------END VALISS SEED------\n"
+      },
+      "expect": {
+        "ok": true,
+        "claims": {
+          "has_account": true,
+          "has_seed": true
+        }
+      }
+    },
+    {
+      "id": "creds/missing",
+      "desc": "a creds file with no token markers is rejected",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 1\n\njust some notes, no token markers here\n"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "missing"
+      }
+    },
+    {
+      "id": "creds/unsupported-version",
+      "desc": "a creds version the parser does not implement is rejected",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 2\n\n-----BEGIN VALISS ACCOUNT TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJJVFhBU1I3SFhXWlpGVzZRU1hTWVBBWEJFRjRPRlUzUjdOUzVST0ZXTzZRN1hSWjVXNUJBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJPQ1VRQU5ZNDNGTVNKRDdFNTJWSlEzR0FUT0RZVkEyWUpONk5UR0lHMzZIS1NPMlFJRFFRUllUTSIsIm5hbWUiOiJhY21lIiwic3ViIjoiQUNGU0RHM1pNN05HNTJQU0o2UURSWVg2UllTTENLRFY1VURaV0hTRENFRDZRTFdGWVpINEVHWFQiLCJ2YWxpc3MiOnsidHlwZSI6ImFjY291bnQifX0.zCIVDwVTQkO3FEDfPkITb2Os51b5H568-rxL-w1gyHXbRFITeDWnjb4K2AsYHBO4GDIS8S8BaXedF-qS8u8NAw\n------END VALISS ACCOUNT TOKEN------\n"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "unsupported_version"
+      }
+    },
+    {
+      "id": "creds/malformed-unclosed",
+      "desc": "an unclosed section marker is malformed",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 1\n\n-----BEGIN VALISS ACCOUNT TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJJVFhBU1I3SFhXWlpGVzZRU1hTWVBBWEJFRjRPRlUzUjdOUzVST0ZXTzZRN1hSWjVXNUJBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJPQ1VRQU5ZNDNGTVNKRDdFNTJWSlEzR0FUT0RZVkEyWUpONk5UR0lHMzZIS1NPMlFJRFFRUllUTSIsIm5hbWUiOiJhY21lIiwic3ViIjoiQUNGU0RHM1pNN05HNTJQU0o2UURSWVg2UllTTENLRFY1VURaV0hTRENFRDZRTFdGWVpINEVHWFQiLCJ2YWxpc3MiOnsidHlwZSI6ImFjY291bnQifX0.zCIVDwVTQkO3FEDfPkITb2Os51b5H568-rxL-w1gyHXbRFITeDWnjb4K2AsYHBO4GDIS8S8BaXedF-qS8u8NAw\n"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "malformed"
+      }
+    },
+    {
+      "id": "creds/malformed-empty-section",
+      "desc": "a section with no payload line is malformed",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 1\n\n-----BEGIN VALISS ACCOUNT TOKEN-----\n------END VALISS ACCOUNT TOKEN------\n"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "malformed"
+      }
+    },
+    {
+      "id": "creds/malformed-multiple-payload-lines",
+      "desc": "a section with more than one payload line is malformed",
+      "op": "parse_creds",
+      "input": {
+        "creds": "VALISS-CREDS-VERSION: 1\n\n-----BEGIN VALISS ACCOUNT TOKEN-----\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJJVFhBU1I3SFhXWlpGVzZRU1hTWVBBWEJFRjRPRlUzUjdOUzVST0ZXTzZRN1hSWjVXNUJBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJPQ1VRQU5ZNDNGTVNKRDdFNTJWSlEzR0FUT0RZVkEyWUpONk5UR0lHMzZIS1NPMlFJRFFRUllUTSIsIm5hbWUiOiJhY21lIiwic3ViIjoiQUNGU0RHM1pNN05HNTJQU0o2UURSWVg2UllTTENLRFY1VURaV0hTRENFRDZRTFdGWVpINEVHWFQiLCJ2YWxpc3MiOnsidHlwZSI6ImFjY291bnQifX0.zCIVDwVTQkO3FEDfPkITb2Os51b5H568-rxL-w1gyHXbRFITeDWnjb4K2AsYHBO4GDIS8S8BaXedF-qS8u8NAw\neyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkiLCJ2ZXIiOjF9.eyJqdGkiOiJJVFhBU1I3SFhXWlpGVzZRU1hTWVBBWEJFRjRPRlUzUjdOUzVST0ZXTzZRN1hSWjVXNUJBIiwiaWF0IjoxNzg0MTMzODczLCJpc3MiOiJPQ1VRQU5ZNDNGTVNKRDdFNTJWSlEzR0FUT0RZVkEyWUpONk5UR0lHMzZIS1NPMlFJRFFRUllUTSIsIm5hbWUiOiJhY21lIiwic3ViIjoiQUNGU0RHM1pNN05HNTJQU0o2UURSWVg2UllTTENLRFY1VURaV0hTRENFRDZRTFdGWVpINEVHWFQiLCJ2YWxpc3MiOnsidHlwZSI6ImFjY291bnQifX0.zCIVDwVTQkO3FEDfPkITb2Os51b5H568-rxL-w1gyHXbRFITeDWnjb4K2AsYHBO4GDIS8S8BaXedF-qS8u8NAw\n------END VALISS ACCOUNT TOKEN------\n"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "malformed"
+      }
+    }
+  ]
+}

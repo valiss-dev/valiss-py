@@ -9,14 +9,29 @@ of creds that additionally carries the upstream account token, for servers
 that do not resolve it. Bearer creds carry tokens only: their holder cannot
 sign requests and the server accepts them only when the effective token is
 a bearer user token.
+
+The file begins with a ``VALISS-CREDS-VERSION`` line that versions the
+container only (the tokens inside carry their own wire version). A parser
+reads it before the payload and rejects a version it does not implement; an
+absent line reads as the current version, since the pre-versioned format is
+otherwise identical.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from . import nkeys
-from .errors import ValissError
+from .errors import Reason, ValissError
+
+# The creds-file container version. It is emitted as a header line and checked
+# on parse, independent of the wire version of the tokens the file carries.
+_CREDS_VERSION = 1
+_CREDS_VERSION_MARKER = "VALISS-CREDS-VERSION:"
+
+# Go's strconv.Atoi accepts ASCII digits with an optional leading sign only.
+_VERSION_VALUE = re.compile(r"[+-]?[0-9]+")
 
 _ACCOUNT_TOKEN_BEGIN = "-----BEGIN VALISS ACCOUNT TOKEN-----"
 _ACCOUNT_TOKEN_END = "------END VALISS ACCOUNT TOKEN------"
@@ -52,8 +67,8 @@ class Creds:
             raise ValissError(f"valiss: creds seed: {exc}") from exc
 
     def format(self) -> str:
-        """Render the creds file content."""
-        out = ""
+        """Render the creds file content, beginning with the version line."""
+        out = f"{_CREDS_VERSION_MARKER} {_CREDS_VERSION}\n\n"
         if self.account_token:
             out += f"{_ACCOUNT_TOKEN_BEGIN}\n{self.account_token.strip()}\n{_ACCOUNT_TOKEN_END}\n"
         if self.user_token:
@@ -70,12 +85,14 @@ class Creds:
 
 
 def parse(contents: str) -> Creds:
-    """Extract the creds from a file's contents. Every section is optional
-    on its own, but at least one token must be present."""
+    """Extract the creds from a file's contents. The version line, if present,
+    is checked before the payload. Every section is optional on its own, but at
+    least one token must be present."""
+    _check_version(contents)
     account_token, _ = _between(contents, _ACCOUNT_TOKEN_BEGIN, _ACCOUNT_TOKEN_END, "creds token")
     user_token, _ = _between(contents, _USER_TOKEN_BEGIN, _USER_TOKEN_END, "creds user token")
     if not account_token and not user_token:
-        raise ValissError("valiss: creds: no token markers found")
+        raise ValissError("valiss: creds: no token markers found", reason=Reason.MISSING)
     seed, _ = _between(contents, _SEED_BEGIN, _SEED_END, "creds seed")
     return Creds(account_token=account_token, user_token=user_token, seed=seed)
 
@@ -90,6 +107,32 @@ def load(path: str) -> Creds:
     return parse(raw)
 
 
+def _check_version(contents: str) -> None:
+    """Read the creds-format version header and reject a version this parser
+    does not implement. An absent header is read as the current version. It is
+    checked before the payload, so an incompatible file is rejected cleanly
+    rather than mis-parsed."""
+    for line in contents.split("\n"):
+        rest = line.strip()
+        if not rest.startswith(_CREDS_VERSION_MARKER):
+            continue
+        value = rest[len(_CREDS_VERSION_MARKER):].strip()
+        # Go parses the value with strconv.Atoi: ASCII digits with an optional
+        # sign only. Reject underscores and Unicode digits that Python's int()
+        # would otherwise accept.
+        if _VERSION_VALUE.fullmatch(value) is None:
+            raise ValissError(
+                f"valiss: creds: malformed version {value!r}", reason=Reason.MALFORMED
+            )
+        version = int(value)
+        if version != _CREDS_VERSION:
+            raise ValissError(
+                f"valiss: creds: unsupported version {version}", reason=Reason.UNSUPPORTED_VERSION
+            )
+        return
+    return
+
+
 def _between(contents: str, begin: str, end: str, what: str) -> tuple[str, bool]:
     """Single non-empty line strictly between a begin and end marker. The
     bool is False when the begin marker is absent. A present section is
@@ -99,7 +142,7 @@ def _between(contents: str, begin: str, end: str, what: str) -> tuple[str, bool]
     confusing cryptographic error."""
     inside = False
     payload = ""
-    for line in contents.splitlines():
+    for line in contents.split("\n"):
         line = line.strip()
         if line == begin:
             inside = True
@@ -107,14 +150,18 @@ def _between(contents: str, begin: str, end: str, what: str) -> tuple[str, bool]
             continue
         elif line == end:
             if not payload:
-                raise ValissError(f'valiss: {what}: no content before "{end}"')
+                raise ValissError(
+                    f'valiss: {what}: no content before "{end}"', reason=Reason.MALFORMED
+                )
             return payload, True
         elif not line:
             continue
         elif not payload:
             payload = line
         else:
-            raise ValissError(f'valiss: {what}: unexpected content in "{begin}" section')
+            raise ValissError(
+                f'valiss: {what}: unexpected content in "{begin}" section', reason=Reason.MALFORMED
+            )
     if inside:
-        raise ValissError(f'valiss: {what}: marker "{begin}" not closed')
+        raise ValissError(f'valiss: {what}: marker "{begin}" not closed', reason=Reason.MALFORMED)
     return "", False

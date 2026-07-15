@@ -16,12 +16,14 @@ jobs:
       with:
         path: valiss-py
 
-    # Sibling checkout of the Go implementation so the cross-language
-    # interop suite runs instead of skipping.
+    # Sibling checkout of the Go reference (wire spec 1) so the cross-language
+    # interop suite runs instead of skipping. Pinned to the tag valiss-py
+    # targets; tests/interop/go.mod replaces the module to ../../../valiss-go.
     - uses: actions/checkout@v7
       with:
-        repository: mikluko/valiss
-        path: valiss
+        repository: valiss-dev/valiss-go
+        ref: v0.12.0
+        path: valiss-go
 
     - name: Setup Go
       uses: actions/setup-go@v6

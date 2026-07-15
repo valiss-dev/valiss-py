@@ -1,7 +1,7 @@
 [project]
 name = "valiss"
-version = "0.3.0"
-description = "Client library for valiss tenant authentication: nkey-signed HTTP and gRPC requests"
+version = "0.4.0"
+description = "Client library for valiss tenant authentication: nkey-signed HTTP and gRPC requests (wire spec 1)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Mikhail Lukianchenko" }]
@@ -9,8 +9,9 @@ requires-python = ">=3.11"
 dependencies = ["cryptography>=42"]
 
 [project.urls]
-Repository = "https://github.com/mikluko/valiss-py"
-Upstream = "https://github.com/mikluko/valiss"
+Repository = "https://github.com/valiss-dev/valiss-py"
+Upstream = "https://github.com/valiss-dev/valiss-go"
+Spec = "https://github.com/valiss-dev/spec"
 
 [project.optional-dependencies]
 grpc = ["grpcio>=1.60"]

@@ -169,9 +169,17 @@ def test_decode_and_issuer_of(account, user):
     assert claims.subject == user.public_key
 
 
+def _header(tok: str) -> bytes:
+    chunk = tok.split(".")[0]
+    return base64.urlsafe_b64decode(chunk + "=" * (-len(chunk) % 4))
+
+
 def test_wire_shape(account, user):
-    """Payload fields and jti derivation match the Go wire format."""
+    """Header bytes, payload fields, and jti derivation match the Go wire
+    format (spec 1)."""
     tok = token.issue_user(account, "alice", user.public_key, ttl=timedelta(minutes=5), now=NOW)
+    # The version-1 header is byte-exact and carries ver=1.
+    assert _header(tok) == b'{"typ":"JWT","alg":"ed25519-nkey","ver":1}'
     doc = _payload(tok)
     assert list(doc) == ["jti", "iat", "iss", "name", "sub", "exp", "valiss"]
     assert doc["valiss"] == {"type": "user"}
@@ -180,6 +188,53 @@ def test_wire_shape(account, user):
         json.dumps(unhashed, separators=(",", ":"), ensure_ascii=False).encode()
     ).digest()
     assert doc["jti"] == base64.b32encode(digest).decode().rstrip("=")
+
+
+def test_verify_rejects_unsupported_version(account, user):
+    """A verifier reads ver before parsing the payload and rejects an
+    unrecognized version cleanly, without mis-parsing it."""
+    tok = token.issue_user(account, "alice", user.public_key, now=NOW)
+    head, payload, sig = tok.split(".")
+    bumped = (
+        base64.urlsafe_b64encode(b'{"typ":"JWT","alg":"ed25519-nkey","ver":2}')
+        .decode()
+        .rstrip("=")
+    )
+    with pytest.raises(ValissError) as exc:
+        token.verify_user(f"{bumped}.{payload}.{sig}", account.public_key)
+    assert exc.value.reason == "unsupported_version"
+
+
+def test_jti_html_escapes_like_go(account, user):
+    """jti derivation reproduces Go encoding/json HTML-escaping of < > &, so a
+    name carrying those characters yields the same content-derived jti."""
+    tok = token.issue_user(account, "a<b>&c", user.public_key, ttl=timedelta(minutes=5), now=NOW)
+    payload_chunk = tok.split(".")[1]
+    payload_bytes = base64.urlsafe_b64decode(payload_chunk + "=" * (-len(payload_chunk) % 4))
+    assert b"\\u003c" in payload_bytes  # <
+    assert b"\\u003e" in payload_bytes  # >
+    assert b"\\u0026" in payload_bytes  # &
+    # The escaped serialization round-trips: the token still verifies and the
+    # name decodes back to its unescaped form.
+    assert token.verify_user(tok, account.public_key).name == "a<b>&c"
+
+
+def test_request_signature_binds_version_prefix(user):
+    """The signed request bytes begin with the v1 version tag, so a v1
+    reconstruction fails closed against any other version."""
+    context = b"http\nGET\napi.example.com\n/v1/widgets\n"
+    timestamp, signature = token.sign_request(user, context, NOW)
+    expected = (
+        b"valiss-req-v1\n"
+        + timestamp.encode()
+        + b"\n"
+        + hashlib.sha256(context).hexdigest().encode()
+    )
+    nkeys.from_public_key(user.public_key).verify(expected, base64.b64decode(signature))
+    # Reason codes surface on the verify path.
+    with pytest.raises(ValissError) as exc:
+        token.verify_signature(user.public_key, "not-a-timestamp", signature, context, NOW)
+    assert exc.value.reason == "skew"
 
 
 def test_sign_and_verify_request(user):

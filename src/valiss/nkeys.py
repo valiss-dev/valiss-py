@@ -102,6 +102,12 @@ def decode_seed(encoded: str) -> tuple[int, bytes]:
     prefix = (data[0] & 7) << 5 | (data[1] & 248) >> 3
     if prefix not in _PUBLIC_PREFIXES:
         raise ValissError("valiss: invalid nkey seed prefix")
+    # Guard the 32-byte seed length here (mirroring from_public_key), so a
+    # truncated seed with a recomputed CRC fails as a ValissError rather than a
+    # raw cryptography.ValueError from Ed25519PrivateKey.from_private_bytes that
+    # callers do not catch.
+    if len(data) - 2 != 32:
+        raise ValissError("valiss: invalid nkey seed length")
     return prefix, data[2:]
 
 

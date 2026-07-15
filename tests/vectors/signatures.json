@@ -1,0 +1,118 @@
+{
+  "spec": 1,
+  "cases": [
+    {
+      "id": "signature/valid",
+      "desc": "a request signature verifies against the subject key within the skew window",
+      "op": "verify_signature",
+      "input": {
+        "signature": "rYmOpWOdgJ0uxTM+K3b2pxGd03J1GYqqMUyP1q4+Au/7b1/bsLqiC5CsU/3rLNEvjs5EGc3bMeXarUy8TyfwCA==",
+        "timestamp": "2030-01-01T00:00:00Z"
+      },
+      "args": {
+        "context": "http\nGET\napi.example.com\n/v1/widgets\n",
+        "now": "2030-01-01T00:00:00Z",
+        "skew": "2m",
+        "subject_pub": "UDR4FOUULEEDDADS2DGP4D7TWNTMC4PFZWZAEO575MMPFNDKVDM2TKGR"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "id": "signature/skew-outside-window",
+      "desc": "a timestamp far outside the skew window is rejected",
+      "op": "verify_signature",
+      "input": {
+        "signature": "rYmOpWOdgJ0uxTM+K3b2pxGd03J1GYqqMUyP1q4+Au/7b1/bsLqiC5CsU/3rLNEvjs5EGc3bMeXarUy8TyfwCA==",
+        "timestamp": "2030-01-01T00:00:00Z"
+      },
+      "args": {
+        "context": "http\nGET\napi.example.com\n/v1/widgets\n",
+        "now": "2030-01-01T00:10:00Z",
+        "skew": "2m",
+        "subject_pub": "UDR4FOUULEEDDADS2DGP4D7TWNTMC4PFZWZAEO575MMPFNDKVDM2TKGR"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "skew"
+      }
+    },
+    {
+      "id": "signature/skew-unparsable-timestamp",
+      "desc": "an unparsable timestamp is rejected as a skew failure",
+      "op": "verify_signature",
+      "input": {
+        "signature": "rYmOpWOdgJ0uxTM+K3b2pxGd03J1GYqqMUyP1q4+Au/7b1/bsLqiC5CsU/3rLNEvjs5EGc3bMeXarUy8TyfwCA==",
+        "timestamp": "not-a-timestamp"
+      },
+      "args": {
+        "context": "http\nGET\napi.example.com\n/v1/widgets\n",
+        "now": "2030-01-01T00:00:00Z",
+        "skew": "2m",
+        "subject_pub": "UDR4FOUULEEDDADS2DGP4D7TWNTMC4PFZWZAEO575MMPFNDKVDM2TKGR"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "skew"
+      }
+    },
+    {
+      "id": "signature/bad-signature-encoding",
+      "desc": "a signature that is not valid base64std is rejected",
+      "op": "verify_signature",
+      "input": {
+        "signature": "*YmOpWOdgJ0uxTM+K3b2pxGd03J1GYqqMUyP1q4+Au/7b1/bsLqiC5CsU/3rLNEvjs5EGc3bMeXarUy8TyfwCA==",
+        "timestamp": "2030-01-01T00:00:00Z"
+      },
+      "args": {
+        "context": "http\nGET\napi.example.com\n/v1/widgets\n",
+        "now": "2030-01-01T00:00:00Z",
+        "skew": "2m",
+        "subject_pub": "UDR4FOUULEEDDADS2DGP4D7TWNTMC4PFZWZAEO575MMPFNDKVDM2TKGR"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "bad_signature_encoding"
+      }
+    },
+    {
+      "id": "signature/bad-request-signature",
+      "desc": "a signature that decodes but does not verify is rejected",
+      "op": "verify_signature",
+      "input": {
+        "signature": "rZmOpWOdgJ0uxTM+K3b2pxGd03J1GYqqMUyP1q4+Au/7b1/bsLqiC5CsU/3rLNEvjs5EGc3bMeXarUy8TyfwCA==",
+        "timestamp": "2030-01-01T00:00:00Z"
+      },
+      "args": {
+        "context": "http\nGET\napi.example.com\n/v1/widgets\n",
+        "now": "2030-01-01T00:00:00Z",
+        "skew": "2m",
+        "subject_pub": "UDR4FOUULEEDDADS2DGP4D7TWNTMC4PFZWZAEO575MMPFNDKVDM2TKGR"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "bad_request_signature"
+      }
+    },
+    {
+      "id": "signature/bad-request-signature-context",
+      "desc": "a valid signature over a different context does not verify",
+      "op": "verify_signature",
+      "input": {
+        "signature": "rYmOpWOdgJ0uxTM+K3b2pxGd03J1GYqqMUyP1q4+Au/7b1/bsLqiC5CsU/3rLNEvjs5EGc3bMeXarUy8TyfwCA==",
+        "timestamp": "2030-01-01T00:00:00Z"
+      },
+      "args": {
+        "context": "http\nPOST\napi.example.com\n/v1/widgets\n",
+        "now": "2030-01-01T00:00:00Z",
+        "skew": "2m",
+        "subject_pub": "UDR4FOUULEEDDADS2DGP4D7TWNTMC4PFZWZAEO575MMPFNDKVDM2TKGR"
+      },
+      "expect": {
+        "ok": false,
+        "reason": "bad_request_signature"
+      }
+    }
+  ]
+}

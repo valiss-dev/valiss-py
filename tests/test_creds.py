@@ -85,3 +85,24 @@ def test_signer_rejects_malformed_seed():
     c = creds.Creds(account_token="acct.token.sig", seed="not-a-seed")
     with pytest.raises(ValissError, match="creds seed"):
         c.signer()
+
+
+def test_format_emits_version_line():
+    c = creds.Creds(account_token="acct.token.sig")
+    assert c.format().startswith("VALISS-CREDS-VERSION: 1\n")
+
+
+def test_parse_absent_version_header_reads_as_current():
+    # The pre-versioned format (no header line) is read as the current version.
+    content = "-----BEGIN VALISS ACCOUNT TOKEN-----\nacct.token.sig\n------END VALISS ACCOUNT TOKEN------\n"
+    assert creds.parse(content).account_token == "acct.token.sig"
+
+
+def test_parse_rejects_unsupported_version():
+    content = (
+        "VALISS-CREDS-VERSION: 2\n\n"
+        "-----BEGIN VALISS ACCOUNT TOKEN-----\nacct.token.sig\n------END VALISS ACCOUNT TOKEN------\n"
+    )
+    with pytest.raises(ValissError) as exc:
+        creds.parse(content)
+    assert exc.value.reason == "unsupported_version"

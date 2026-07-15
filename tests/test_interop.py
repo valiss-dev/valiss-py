@@ -1,8 +1,14 @@
 """Cross-language interop: Go-minted credentials must verify in Python and
-Python-minted credentials must verify in Go. Skipped when the Go toolchain
-or the sibling ../valiss checkout is unavailable."""
+Python-minted credentials must verify in Go, against the valiss-go reference
+(v0.12.0, wire spec 1). Skipped when the Go toolchain or the sibling
+valiss-go checkout is unavailable.
+
+The harness resolves valiss-go from ``VALISS_GO_DIR`` if set, else a sibling
+``valiss-go`` checkout; ``tests/interop/go.mod`` ``replace``s the module to
+``../../../valiss-go``."""
 
 import json
+import os
 import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -10,14 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from valiss import creds, httpauth, nkeys, token
+from valiss import creds, httpauth, message, nkeys, token
 
 INTEROP_DIR = Path(__file__).parent / "interop"
-VALISS_GO = Path(__file__).parent.parent.parent / "valiss"
+VALISS_GO = Path(os.environ.get("VALISS_GO_DIR") or Path(__file__).parent.parent.parent / "valiss-go")
 
 pytestmark = pytest.mark.skipif(
     shutil.which("go") is None or not VALISS_GO.is_dir(),
-    reason="requires the Go toolchain and a ../valiss checkout",
+    reason="requires the Go toolchain and a sibling valiss-go checkout",
 )
 
 
@@ -176,6 +182,69 @@ def test_python_minted_account_credential_verifies_in_go():
         )
     )
     assert out == {"account": "acme"}
+
+
+def test_go_minted_message_verifies_in_python():
+    minted = json.loads(_run("mint"))
+    now = datetime.now(timezone.utc)
+    # A Go-minted message token — self-signed by the user key, embedding the
+    # provenance chain, bound to an audience and a payload checksum — verifies
+    # offline in Python with only the operator public key.
+    claims = message.verify_message(
+        minted["message_token"],
+        minted["operator_pub"],
+        now=now,
+        audience=minted["message_audience"],
+        payload=minted["message_payload"].encode(),
+    )
+    assert claims.account.name == "acme"
+    assert claims.user.name == "alice"
+    assert claims.audience == minted["message_audience"]
+    assert claims.checksum == message.checksum(minted["message_payload"].encode())
+
+
+def test_python_minted_message_verifies_in_go():
+    operator = nkeys.create_operator()
+    account = nkeys.create_account()
+    user = nkeys.create_user()
+    now = datetime.now(timezone.utc)
+
+    account_tok = token.issue_account(
+        operator, "acme", account.public_key, ttl=timedelta(hours=1), now=now
+    )
+    user_tok = token.issue_user(
+        account, "alice", user.public_key, ttl=timedelta(minutes=15), now=now
+    )
+    payload = "hello world"
+    audience = "https://api.example.com/ingest"
+    # A Python-minted message token verifies as a full chain in Go.
+    message_tok = message.issue_message(
+        user,
+        audience=audience,
+        checksum=message.checksum(payload.encode()),
+        chain=(account_tok, user_tok),
+        ttl=timedelta(seconds=30),
+        now=now,
+    )
+
+    out = json.loads(
+        _run(
+            "verify_message",
+            stdin=json.dumps(
+                {
+                    "operator_pub": operator.public_key,
+                    "token": message_tok,
+                    "audience": audience,
+                    "payload": payload,
+                }
+            ),
+        )
+    )
+    assert out["account"] == "acme"
+    assert out["user"] == "alice"
+    assert out["subject"] == user.public_key
+    assert out["audience"] == audience
+    assert out["checksum"] == message.checksum(payload.encode())
 
 
 def grpcauth_method_context() -> bytes:
