@@ -52,3 +52,4 @@ jobs:
         uv run --group dev examples/issue_user.py
         uv run --group dev examples/verify_request.py
         uv run --group dev examples/verify_tooling.py
+        uv run --group dev examples/http_server.py

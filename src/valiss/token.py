@@ -199,6 +199,10 @@ def ext_of(ext: Mapping[str, Any], ext_type: type[_Ext]) -> _Ext | None:
     payload = ext.get(name)
     if payload is None:
         return None
+    if not isinstance(payload, Mapping):
+        raise ValissError(
+            f"valiss: extension {name!r} is not an object", reason=Reason.EXTENSION_INVALID
+        )
     try:
         return ext_type.decode(payload)
     except (ValueError, TypeError, KeyError) as exc:
