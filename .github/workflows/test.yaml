@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Callable so the release workflow can gate publishing on the full suite.
+  workflow_call:
 
 permissions:
   contents: read

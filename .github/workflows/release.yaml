@@ -8,19 +8,13 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  # Fail fast on the most common release mistake — a tag that does not match the
+  # packaged version — before spending the full test run.
+  check:
     runs-on: ubuntu-latest
-    # Must match the environment configured for the PyPI trusted publisher.
-    environment: pypi
-    permissions:
-      id-token: write
     steps:
     - uses: actions/checkout@v7
-
-    - name: Setup uv
-      uses: astral-sh/setup-uv@v8.3.2
-
-    - name: Check tag matches project version
+    - name: Tag matches project version
       run: |
         version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
         if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
@@ -28,8 +22,40 @@ jobs:
           exit 1
         fi
 
+  # Gate the release on the full CI (pyright + tests + Go interop + examples),
+  # run against the tagged commit. A tag never publishes a red build.
+  test:
+    needs: check
+    uses: ./.github/workflows/test.yaml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    # Must match the environment configured for the PyPI trusted publisher.
+    environment: pypi
+    permissions:
+      id-token: write   # PyPI trusted publishing (OIDC), no stored token
+      contents: write   # create the GitHub Release
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v8.3.2
+
     - name: Build
       run: uv build
 
     - name: Publish to PyPI
       run: uv publish
+
+    # Publish the sdist + wheel as a GitHub Release with notes generated from
+    # the merged PRs since the previous tag. Runs after PyPI so the release only
+    # appears once the package is live.
+    - name: Create GitHub Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "${GITHUB_REF_NAME}" dist/* \
+          --title "${GITHUB_REF_NAME}" \
+          --generate-notes \
+          --verify-tag

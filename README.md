@@ -286,3 +286,30 @@ positive cases verify with the expected claims, negative cases map to the spec
 credentials and message tokens against the Go reference; it needs the Go
 toolchain and a sibling `valiss-go` checkout (or `VALISS_GO_DIR`), and skips
 otherwise.
+
+## Releasing
+
+Releases are tag-driven: pushing a `vX.Y.Z` tag runs the **Release** workflow,
+which fails fast if the tag and the packaged version disagree, gates on the full
+CI (pyright + tests + Go interop + examples), then builds and publishes to PyPI
+via [trusted publishing](https://docs.pypi.org/trusted-publishers/) (OIDC, no
+stored token) and cuts a GitHub Release with the sdist + wheel and auto-generated
+notes. The package version is independent of the wire spec version, which stays 1
+until the format changes.
+
+Checklist:
+
+1. Bump `version` in `pyproject.toml` (semver) and merge to `main` via PR.
+2. Confirm `main` is green.
+3. Tag the merge commit and push — the tag must equal the `pyproject.toml`
+   version with a `v` prefix:
+   ```sh
+   git tag v1.2.3 && git push origin v1.2.3
+   ```
+4. Watch the Release workflow; on success confirm the [PyPI release](https://pypi.org/project/valiss/)
+   and the GitHub Release.
+
+One-time setup: configure a PyPI trusted publisher for the `valiss` project
+pointing at this repo's `release.yaml` under the `pypi` environment. PyPI versions
+are immutable — to fix a bad release, bump to the next version and re-tag (and
+`yank` the bad one on PyPI to discourage installs).
