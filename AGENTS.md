@@ -47,7 +47,7 @@ message text.
 ## Commands
 
 ```sh
-uv sync --all-extras            # venv + all extras (dev adds grpc/httpx/django/starlette/protobuf/pyright)
+uv sync --all-extras            # venv + all extras (dev adds grpc/httpx/requests/django/starlette/protobuf/pyright)
 uv run pytest                   # full suite, including conformance + Go interop
 uv run pyright src/valiss       # the type-check gate (strict on pure modules via a file header)
 uv run pytest tests/test_conformance.py       # spec-1 vectors only
@@ -106,14 +106,17 @@ Module map (Go package → Python module):
   the `Authenticator` server interceptor + `identity_from_context`, and the
   `grpc` extension claim (`Ext`, pure in `.extension`).
 - `contrib/httpauth` → `valiss.httpauth` (package) — client `credential_headers` /
-  `Auth`, the pure `http` extension claim + `authorize_ext` (`.extension`), the
-  shared `authenticate` core (`._server`), and Django / ASGI server middleware
-  (`.django`, `.asgi`).
+  `Auth` (httpx) / `RequestsAuth` (requests), the pure `http` extension claim +
+  `authorize_ext` (`.extension`), the shared `authenticate` core (`._server`),
+  and Django / ASGI server middleware (`.django`, `.asgi`).
 - `contrib/httpsig` / `contrib/grpcsig` → `valiss.httpsig` / `valiss.grpcsig` —
-  message-token transports (client mint + server verify with chain negotiation).
-  The transport-agnostic minter, trust-anchor binding, and
-  verify-with-negotiation state machine live in `valiss._msgtransport`, shared by
-  both; grpcsig binds the checksum to deterministic protobuf (`.payload`).
+  message-token transports (client mint + server verify with chain negotiation);
+  httpsig ships both an httpx client (`Transport`) and a requests client
+  (`RequestsTransport`, negotiation via a response hook). The transport-agnostic
+  minter, trust-anchor binding, and verify-with-negotiation state machine live in
+  `valiss._msgtransport`, shared by both; the requests adapters' wire-faithful
+  host/path/body derivation lives in `valiss._requests`; grpcsig binds the
+  checksum to deterministic protobuf (`.payload`).
 
 There is no CLI here; operator/account credential minting for production
 stays with the Go `valiss` CLI. `token.issue_account`/`issue_operator`
@@ -159,5 +162,6 @@ Do not change without changing the Go side in lockstep:
   tokens, never the reverse. Every token binds a subject key; a bearer
   user token still binds one, the server just accepts it unsigned.
 - Tests inject time via the `now=` parameters; prefer that over sleeping.
-- grpcio and httpx are optional extras; `valiss.token`, `valiss.creds`, and
-  `valiss.nkeys` must stay importable with only `cryptography` installed.
+- grpcio, httpx, and requests are optional extras; `valiss.token`,
+  `valiss.creds`, and `valiss.nkeys` must stay importable with only
+  `cryptography` installed.
