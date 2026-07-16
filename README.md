@@ -21,18 +21,22 @@ between the two, proven against the shared conformance vectors.
   different operation. The Go server verifies the chain up to the pinned
   operator key.
 
-This port covers the client side: minting short-lived user tokens from an
-account token and seed, and attaching credentials to httpx and gRPC
-clients. Chain verification, allowlists, and extension enforcement stay
-with the Go server; key generation and account minting stay with the Go
-`valiss` CLI.
+This port is full-parity with the Go reference on both sides of the wire:
+minting tokens (all levels, including bearer and message tokens), attaching
+credentials to httpx and gRPC clients, and **verifying requests itself** — the
+integrated `Verifier`, the multi-operator keyring, HTTP (Django / ASGI) and gRPC
+server middleware, and the httpsig / grpcsig message-token transports. Only key
+generation and production account minting stay with the Go `valiss` CLI.
 
 ## Install
 
 ```sh
-uv add valiss              # core: creds parsing, token minting, request signing
-uv add 'valiss[httpx]'     # + httpx auth hook
-uv add 'valiss[grpc]'      # + gRPC call credentials
+uv add valiss              # core: creds parsing, token minting, request signing, verification
+uv add 'valiss[httpx]'     # + httpx auth hook and the httpsig client
+uv add 'valiss[grpc]'      # + gRPC call credentials and the server interceptor
+uv add 'valiss[grpcsig]'   # + gRPC message-token transport (grpcio + protobuf)
+uv add 'valiss[django]'    # + HTTP server middleware for Django
+uv add 'valiss[fastapi]'   # + HTTP server middleware for FastAPI / any ASGI app
 ```
 
 ## Issue short-lived user tokens
@@ -138,8 +142,47 @@ identity = verifier.verify(Request(
 
 Pass `operator_token=` to enforce the trust domain's epoch and validity window,
 or `resolver=` (a callable or `{account_pub: token}` mapping) to accept
-user-only credentials. `clock=` injects time in tests. Framework middleware
-(Django, FastAPI/ASGI) and the gRPC interceptor build on this and land next.
+user-only credentials. `clock=` injects time in tests. For a service trusting
+several operators, `Verifier.with_keyring(Keyring(*operator_tokens), allowlist)`
+selects the trust domain the credential names.
+
+## Server: HTTP and gRPC middleware
+
+The middleware wraps the `Verifier` with header extraction, status-code mapping,
+and fail-closed extension enforcement, so the handler only ever sees an
+authenticated request. Verified identity is handed off framework-natively.
+
+```python
+# FastAPI / any ASGI app  (valiss[fastapi])
+from fastapi import Depends, FastAPI
+from valiss import ALLOW_ALL, Identity, Verifier
+from valiss.httpauth.asgi import Middleware, valiss_identity
+
+app = FastAPI()
+app.add_middleware(Middleware, verifier=Verifier(operator_pub, ALLOW_ALL))
+
+@app.get("/v1/whoami")
+def whoami(identity: Identity = Depends(valiss_identity)):
+    return {"tenant": identity.account.name}
+```
+
+Django has a sibling adapter (`valiss.httpauth.django`: a `middleware` factory,
+`request.valiss_identity`, `@valiss_required`). For gRPC, the interceptor
+authenticates every RPC and the handler reads the tenant from a context var:
+
+```python
+import grpc
+from valiss import ALLOW_ALL, Verifier, grpcauth
+
+server = grpc.server(executor, interceptors=[
+    grpcauth.Authenticator(Verifier(operator_pub, ALLOW_ALL))])
+
+def GetWidget(self, request, context):
+    identity = grpcauth.identity_from_context()   # the verified tenant
+```
+
+Both take `allow_missing_extension=True` to accept tokens carrying no transport
+extension (authorization handled elsewhere).
 
 ## Message tokens
 
@@ -167,6 +210,28 @@ claims = message.verify_message(
 )  # walks operator -> account -> user -> message; checks epoch, windows, audience, checksum
 ```
 
+The **httpsig** and **grpcsig** transports carry message tokens over HTTP and
+gRPC: a client that mints a proof per request and server middleware that verifies
+it offline, with chain negotiation (a chainless token is answered
+`valiss-chain: required`, then retransmitted with the chain) and an optional
+chain cache so an emitter pays that retransmit once. This is the webhook case —
+the receiver authenticates the message, not a caller.
+
+```python
+# emitter (valiss[httpx])
+import httpx
+from valiss import httpsig
+client = httpx.Client(auth=httpsig.Transport(creds.load("emitter.creds")))
+client.post("https://receiver.example/hook", json=event)
+
+# receiver (valiss[fastapi]) — verifies offline against the operator key
+from valiss.httpsig.asgi import Middleware
+app.add_middleware(Middleware, operator_pub_key=operator_pub)
+```
+
+grpcsig is the gRPC sibling (`unary_client_interceptor` / `unary_server_interceptor`),
+binding the checksum to the request's deterministic protobuf encoding.
+
 ## Wire version
 
 Tokens, creds files, and request signatures each carry their own version
@@ -189,16 +254,27 @@ unrecognized version cleanly. On failure, `ValissError.reason` carries the spec
   epoch + replay + extensions + validators), `Request`, `Identity`
 - `valiss.allowlist` / `valiss.replay` — account-token allowlist (revocation)
   and nonce replay suppression
+- `valiss.keyring` / `valiss.chain` — multi-operator trust (`Verifier.with_keyring`)
+  and the negotiated-chain cache the message-token transports use
 - `valiss.creds` — client creds file (tokens + seed)
 - `valiss.nkeys` — minimal Ed25519 nkeys (operator/account/user)
-- `valiss.grpcauth` — gRPC call credentials and the `grpc` extension claim
-- `valiss.httpauth` — HTTP header building, httpx auth hook, and the
-  `http` extension claim
+- `valiss.grpcauth` — gRPC call credentials, the server `Authenticator`
+  interceptor, and the `grpc` extension claim
+- `valiss.httpauth` — HTTP client headers / httpx `Auth`, the `http` extension
+  claim, and Django / ASGI server middleware (`.django`, `.asgi`)
+- `valiss.httpsig` / `valiss.grpcsig` — message-token transports: a client that
+  mints a proof per request and server middleware/interceptors that verify it
+  offline, with chain negotiation
 
-## Example
+## Examples
 
 ```sh
-uv run --group dev examples/issue_user.py
+uv run --group dev examples/issue_user.py       # mint tokens + wire a client
+uv run --group dev examples/verify_request.py   # the Verifier: chain, revocation, replay
+uv run --group dev examples/http_server.py      # ASGI middleware end-to-end
+uv run --group dev examples/grpc_server.py      # gRPC interceptor end-to-end
+uv run --group dev examples/webhook.py          # httpsig message-token webhook
+uv run --group dev examples/grpc_webhook.py     # grpcsig message-token over gRPC
 ```
 
 ## Conformance and interop

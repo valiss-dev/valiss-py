@@ -55,3 +55,4 @@ jobs:
         uv run --group dev examples/http_server.py
         uv run --group dev examples/grpc_server.py
         uv run --group dev examples/webhook.py
+        uv run --group dev examples/grpc_webhook.py
