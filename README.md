@@ -23,7 +23,7 @@ between the two, proven against the shared conformance vectors.
 
 This port is full-parity with the Go reference on both sides of the wire:
 minting tokens (all levels, including bearer and message tokens), attaching
-credentials to httpx and gRPC clients, and **verifying requests itself** — the
+credentials to httpx, requests, and gRPC clients, and **verifying requests itself** — the
 integrated `Verifier`, the multi-operator keyring, HTTP (Django / ASGI) and gRPC
 server middleware, and the httpsig / grpcsig message-token transports. Only key
 generation and production account minting stay with the Go `valiss` CLI.
@@ -33,6 +33,7 @@ generation and production account minting stay with the Go `valiss` CLI.
 ```sh
 uv add valiss              # core: creds parsing, token minting, request signing, verification
 uv add 'valiss[httpx]'     # + httpx auth hook and the httpsig client
+uv add 'valiss[requests]'  # + requests auth hook and the httpsig client
 uv add 'valiss[grpc]'      # + gRPC call credentials and the server interceptor
 uv add 'valiss[grpcsig]'   # + gRPC message-token transport (grpcio + protobuf)
 uv add 'valiss[django]'    # + HTTP server middleware for Django
@@ -86,8 +87,20 @@ client = httpx.Client(auth=httpauth.Auth(c))
 client.get("https://api.example.com/v1/whoami")
 ```
 
+`requests` has a sibling hook (`valiss[requests]`):
+
+```python
+import requests
+from valiss import creds, httpauth
+
+session = requests.Session()
+session.auth = httpauth.RequestsAuth(creds.load("alice.creds"))
+session.get("https://api.example.com/v1/whoami")
+```
+
 If the server runs a replay cache, enable per-request nonces:
-`httpauth.Auth(c, nonce=True)`. Any other HTTP client works through
+`httpauth.Auth(c, nonce=True)` (`RequestsAuth` takes the same flag). Any
+other HTTP client works through
 `httpauth.credential_headers(c, method, host, path)`; the signature is
 bound to those values, so pass the real ones and build a fresh header set
 per request.
@@ -229,6 +242,10 @@ from valiss.httpsig.asgi import Middleware
 app.add_middleware(Middleware, operator_pub_key=operator_pub)
 ```
 
+A requests-based emitter uses `httpsig.RequestsTransport` (`valiss[requests]`),
+same wire behavior; its chain negotiation runs in a response hook, the way
+requests' own digest auth retries.
+
 grpcsig is the gRPC sibling (`unary_client_interceptor` / `unary_server_interceptor`),
 binding the checksum to the request's deterministic protobuf encoding.
 
@@ -260,10 +277,12 @@ unrecognized version cleanly. On failure, `ValissError.reason` carries the spec
 - `valiss.nkeys` — minimal Ed25519 nkeys (operator/account/user)
 - `valiss.grpcauth` — gRPC call credentials, the server `Authenticator`
   interceptor, and the `grpc` extension claim
-- `valiss.httpauth` — HTTP client headers / httpx `Auth`, the `http` extension
-  claim, and Django / ASGI server middleware (`.django`, `.asgi`)
-- `valiss.httpsig` / `valiss.grpcsig` — message-token transports: a client that
-  mints a proof per request and server middleware/interceptors that verify it
+- `valiss.httpauth` — HTTP client headers / httpx `Auth` / requests
+  `RequestsAuth`, the `http` extension claim, and Django / ASGI server
+  middleware (`.django`, `.asgi`)
+- `valiss.httpsig` / `valiss.grpcsig` — message-token transports: clients that
+  mint a proof per request (httpx `Transport`, requests `RequestsTransport`,
+  the grpcsig interceptor) and server middleware/interceptors that verify it
   offline, with chain negotiation
 
 ## Examples

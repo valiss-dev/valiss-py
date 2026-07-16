@@ -5,15 +5,20 @@ Server-middleware behavior is asserted against both adapters (Django and ASGI)
 through one driver fixture; the client Transport and the full negotiation dance
 (chainless token → valiss-chain: required → retransmit, chain cache) run
 end-to-end through Starlette's TestClient with the real httpx Transport, the one
-harness that exercises both sides. Time is injected via now=/at=, never slept.
+harness that exercises both sides. The requests RequestsTransport runs the same
+dance against the same middleware through a bridging adapter. Time is injected
+via now=/at=, never slept.
 """
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 import pytest
+import requests
 
 import django
 from django.conf import settings
@@ -22,7 +27,7 @@ if not settings.configured:
     settings.configure(DEBUG=True, ALLOWED_HOSTS=["*"], DEFAULT_CHARSET="utf-8", USE_TZ=True)
     django.setup()
 
-from valiss import creds, httpsig, message, nkeys, token
+from valiss import ValissError, creds, httpsig, message, nkeys, token
 from valiss.chain import MemoryChainCache
 from valiss.keyring import Keyring
 from valiss.message import DEFAULT_MESSAGE_TTL
@@ -424,6 +429,199 @@ def test_keyring_negotiation_segments_by_operator():
     assert client.post("/hook", content=b"{}", auth=emitter(a.creds, negotiate=True)).status_code == 200
     assert client.post("/hook", content=b"{}", auth=emitter(b.creds, negotiate=True)).status_code == 200
     assert served == ["prod-us/acme", "on-prem/acme"]  # same tenant, segmented by operator
+
+
+# ---------------------------------------------------------------------------
+# requests client transport: the requests sibling of the httpx Transport, run
+# against the same ASGI middleware through a bridging adapter.
+# ---------------------------------------------------------------------------
+
+
+class _RequestsASGIBridge(requests.adapters.BaseAdapter):
+    """Forward a prepared requests request through the ASGI test stack and
+    rebuild a requests Response, with ``connection`` set so the negotiation
+    response hook can re-send — the role HTTPAdapter plays in production."""
+
+    def __init__(self, client):
+        self._client = client  # the Starlette TestClient over the middleware
+
+    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+        parts = urlsplit(request.url)
+        target = parts.path + (f"?{parts.query}" if parts.query else "")
+        upstream = self._client.request(
+            request.method,
+            target,
+            content=request.body if request.body is not None else b"",
+            headers=dict(request.headers),
+        )
+        response = requests.Response()
+        response.status_code = upstream.status_code
+        response.headers = requests.structures.CaseInsensitiveDict(upstream.headers)
+        response.raw = io.BytesIO(upstream.content)
+        response._content = upstream.content
+        response._content_consumed = True
+        response.url = request.url
+        response.request = request
+        response.connection = self
+        return response
+
+    def close(self):
+        pass
+
+
+def requests_emitter(c, **kwargs):
+    """A requests-side transport pinned to the fixed test clock, so its minted
+    tokens fall in the chain's validity window."""
+    return httpsig.RequestsTransport(c, now=clock(), **kwargs)
+
+
+def requests_stack(**kwargs):
+    """The asgi_stack served to a requests session through the bridge."""
+    client, counter, served = asgi_stack(**kwargs)
+    session = requests.Session()
+    session.mount("http://", _RequestsASGIBridge(client))
+    return session, counter, served
+
+
+def test_requests_transport_mint_and_verify_end_to_end():
+    chn = make_chain(epoch=1)
+    session, _, served = requests_stack(operator_pub_key=chn.operator_pub)
+    payload = b'{"event":"widget.created"}'
+    resp = session.post(f"http://{HOST}/hook", data=payload, auth=requests_emitter(chn.creds))
+    assert resp.status_code == 200
+    assert served == ["-/acme"]  # no operator policy → operator is None
+
+
+def test_requests_transport_bodyless_get():
+    chn = make_chain()
+    session, _, _ = requests_stack(operator_pub_key=chn.operator_pub)
+    resp = session.get(f"http://{HOST}/hook", auth=requests_emitter(chn.creds))
+    assert resp.status_code == 200
+
+
+def test_requests_transport_str_body_checksums_utf8():
+    # requests carries a str body UTF-8-encoded on the wire (urllib3 2's
+    # encoding); the checksum binds to those bytes.
+    chn = make_chain()
+    request = requests.Request("POST", f"http://{HOST}/hook", data="évènt").prepare()
+    requests_emitter(chn.creds)(request)
+    claims = message.verify_message(
+        request.headers[token.HEADER_MESSAGE_TOKEN],
+        chn.operator_pub,
+        audience=HOST + "/hook",
+        payload="évènt".encode(),
+        now=NOW,
+    )
+    assert claims.account.name == "acme"
+
+
+def test_requests_transport_streaming_body_rejected():
+    chn = make_chain()
+    request = requests.Request("POST", f"http://{HOST}/hook", data=iter([b"chunk"])).prepare()
+    with pytest.raises(ValissError, match="buffered"):
+        requests_emitter(chn.creds)(request)
+
+
+def test_requests_negotiation_cold_then_steady_state():
+    chn = make_chain(epoch=1)
+    session, counter, served = requests_stack(
+        operator_pub_key=chn.operator_pub, chain_cache=MemoryChainCache()
+    )
+    auth = requests_emitter(chn.creds, negotiate=True)
+    payload = b'{"event":"x"}'
+
+    resp = session.post(f"http://{HOST}/hook", data=payload, auth=auth)
+    assert resp.status_code == 200
+    assert counter.n == 2  # cold cache: chainless attempt + chain retransmit
+    assert [r.status_code for r in resp.history] == [401]  # the consumed negotiation 401
+    assert token.HEADER_CHAIN_USER_TOKEN in resp.request.headers  # retransmit carried the chain
+    assert len(served) == 1
+
+    resp = session.post(f"http://{HOST}/hook", data=payload, auth=auth)
+    assert resp.status_code == 200
+    assert counter.n == 3  # warm cache: single chainless attempt
+    assert resp.history == []
+    assert len(served) == 2
+
+
+def test_requests_negotiation_stale_cache_evicted_and_renegotiated():
+    chn = make_chain(epoch=1)
+    cache = MemoryChainCache()
+    session, counter, _ = requests_stack(operator_pub_key=chn.operator_pub, chain_cache=cache)
+    auth = requests_emitter(chn.creds, negotiate=True)
+
+    # Plant a foreign chain under this emitter's key: verification fails, the
+    # entry is dropped, and the retransmit re-establishes the real chain.
+    foreign = make_chain(epoch=1)
+    emitter_key = token.decode(chn.creds.user_token).subject
+    cache.put(emitter_key, foreign.creds.account_token, foreign.creds.user_token)
+
+    before = counter.n
+    assert session.post(f"http://{HOST}/hook", data=b"{}", auth=auth).status_code == 200
+    assert counter.n == before + 2  # stale entry: rejected attempt + retransmit
+
+    before = counter.n
+    assert session.post(f"http://{HOST}/hook", data=b"{}", auth=auth).status_code == 200
+    assert counter.n == before + 1  # cache healthy again
+
+
+def test_requests_negotiation_cacheless_receiver_pays_every_time():
+    chn = make_chain()
+    session, counter, _ = requests_stack(operator_pub_key=chn.operator_pub)  # no cache
+    auth = requests_emitter(chn.creds, negotiate=True)
+    before = counter.n
+    assert session.post(f"http://{HOST}/hook", data=b"x", auth=auth).status_code == 200
+    assert counter.n == before + 2  # every message pays the retransmit without a cache
+
+
+def test_requests_negotiation_pinned_config_answers_first_attempt():
+    chn = make_chain(epoch=0)
+    session, counter, _ = requests_stack(
+        operator_pub_key=chn.operator_pub,
+        verify_options={"chain": (chn.creds.account_token, chn.creds.user_token)},
+    )
+    resp = session.post(
+        f"http://{HOST}/hook", data=b"x", auth=requests_emitter(chn.creds, negotiate=True)
+    )
+    assert resp.status_code == 200
+    assert counter.n == 1  # pinned chain answers on the first attempt
+    assert resp.history == []
+
+
+def test_requests_negotiation_plain_401_not_retransmitted():
+    # A genuine failure (an expired token) carries no chain-required signal, so
+    # the response hook must pass the 401 through without a retry.
+    chn = make_chain(epoch=0)
+    session, counter, _ = requests_stack(
+        operator_pub_key=chn.operator_pub,
+        verify_options={"chain": (chn.creds.account_token, chn.creds.user_token)},
+    )
+    stale = httpsig.RequestsTransport(chn.creds, negotiate=True, now=clock(NOW - 2 * HOUR))
+    resp = session.post(f"http://{HOST}/hook", data=b"x", auth=stale)
+    assert resp.status_code == 401
+    assert counter.n == 1
+    assert resp.history == []
+
+
+def test_requests_transport_requires_bundle_creds():
+    chn = make_chain()
+    with pytest.raises(Exception, match="bundle creds"):
+        httpsig.RequestsTransport(creds.Creds(user_token=chn.creds.user_token, seed=chn.creds.seed))
+
+
+def test_requests_transport_non_user_seed_fails_at_mint():
+    chn = make_chain()
+    # minter accepts the account seed; the per-request mint enforces the role.
+    transport = requests_emitter(
+        creds.Creds(
+            account_token=chn.creds.account_token,
+            user_token=chn.creds.user_token,
+            seed=chn.account.seed,
+        )
+    )
+    request = requests.Request("POST", f"http://{HOST}/hook", data=b"x").prepare()
+    with pytest.raises(Exception, match="user-type nkey"):
+        transport(request)
 
 
 # ---------------------------------------------------------------------------

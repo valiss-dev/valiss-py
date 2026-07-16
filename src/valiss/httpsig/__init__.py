@@ -12,13 +12,16 @@ the typical webhook-sender case:
     client = httpx.Client(auth=httpsig.Transport(creds.load("emitter.creds")))
     client.post("https://receiver.example/hook", json=event)   # httpx extra
 
+``RequestsTransport`` is the requests sibling (``requests`` extra):
+``session.auth = httpsig.RequestsTransport(creds.load("emitter.creds"))``.
+
 Server middleware (import the framework submodule explicitly):
 
     from valiss.httpsig.django import middleware, message_claims   # django extra
     from valiss.httpsig import asgi                                # fastapi extra
 """
 
-from ._client import Transport
+from ._client import RequestsTransport, Transport
 from ._core import audience
 
-__all__ = ["Transport", "audience"]
+__all__ = ["RequestsTransport", "Transport", "audience"]
