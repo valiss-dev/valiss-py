@@ -39,10 +39,12 @@ custom validators), backed by allowlist (accepted account-token ids), replay
 verified Identity without a round-trip to Go. The transport adapters wrap it:
 ``httpauth`` for Django and any ASGI app, ``grpcauth`` for grpcio.
 
-For per-message proofs of origin (offline-verifiable webhooks), ``httpsig``
-carries message tokens over HTTP — a client that mints a proof per request and
-Django/ASGI middleware that verifies it against the operator key, with chain
-negotiation and a chain cache.
+For per-message proofs of origin (offline-verifiable webhooks), ``httpsig`` and
+``grpcsig`` carry message tokens over HTTP and gRPC — a client that mints a proof
+per request and server middleware/interceptors that verify it against the
+operator key, with chain negotiation and a chain cache. grpcsig binds the
+checksum to the request's deterministic protobuf encoding (the ``grpcsig``
+extra).
 
 Tokens, creds files, and request signatures each carry their own wire-format
 version. The current version is 1 (SPEC-1.md); it appears on the wire only as

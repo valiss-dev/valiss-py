@@ -14,15 +14,16 @@ request signatures, message tokens, and header names interchange freely, proven
 against the shared conformance vectors. `SPEC-1.md` is the normative wire
 description; where it and the Go code disagree, the code is canonical.
 
-The port mints tokens (all levels, including bearer user tokens and message
-tokens), attaches credentials to clients, and — as of the server-side work —
-verifies requests itself. `valiss.verifier.Verifier` is the integrated
-single-anchor request verifier (chain + allowlist/revocation + epoch policy +
-replay + extension enforcement + custom validators), backed by
-`valiss.allowlist` and `valiss.replay`. Still on the Go side and not yet
-ported: the multi-operator keyring, and the transport middleware/interceptors
-(HTTP, gRPC) and message-token transports (httpsig/grpcsig) — these land in
-later chunks.
+The port is full-parity with the Go reference on both sides of the wire. It
+mints tokens (all levels, including bearer and message tokens), attaches
+credentials to clients, and verifies requests itself. `valiss.verifier.Verifier`
+is the integrated request verifier (chain + allowlist/revocation + epoch policy +
+replay + extension enforcement + custom validators), single-anchor or, via
+`Verifier.with_keyring` (`valiss.keyring`), multi-operator. The transport
+adapters wrap it: `valiss.httpauth` (Django + ASGI middleware), `valiss.grpcauth`
+(gRPC interceptor), and the message-token transports `valiss.httpsig` /
+`valiss.grpcsig`. Nothing of the scheme remains Go-only except key generation and
+production account minting (the Go `valiss` CLI).
 
 The per-token `verify_*` helpers in `valiss.token` stay narrow: they check a
 single token's signature/type/issuer for tooling and inspection; the Verifier
@@ -46,12 +47,18 @@ message text.
 ## Commands
 
 ```sh
-uv sync --all-extras            # set up the venv (dev group installs grpc/httpx)
+uv sync --all-extras            # venv + all extras (dev adds grpc/httpx/django/starlette/protobuf/pyright)
 uv run pytest                   # full suite, including conformance + Go interop
+uv run pyright src/valiss       # the type-check gate (strict on pure modules via a file header)
 uv run pytest tests/test_conformance.py       # spec-1 vectors only
 uv run pytest tests/test_token.py -k bearer   # single file / match
 uv run --group dev examples/issue_user.py     # minting + client wiring demo
 ```
+
+Framework-coupled modules (the httpx/grpc client shims and the Django / Starlette
+adapters) are excluded from pyright in `pyproject.toml`; the pure core and pure
+transport logic stay checked, opting into strict via a `# pyright: strict` file
+header. Keep new pure modules strict.
 
 The conformance tests (`tests/test_conformance.py`) run the frozen spec-1
 vectors vendored under `tests/vectors/` (a verbatim copy from
@@ -88,14 +95,25 @@ Module map (Go package → Python module):
 - `allowlist.go` → `valiss.allowlist` — `Allowlist` protocol (`in`),
   `StaticAllowlist` (set-like, `.from_file`), `ALLOW_ALL`.
 - `replay.go` → `valiss.replay` — `ReplayCache` protocol, `MemoryReplayCache`.
+- `keyring.go` / `chain.go` → `valiss.keyring` / `valiss.chain` — `Keyring`
+  (multi-operator trust; dedup jti, reject dup `(subject, epoch)` / shared name),
+  `ChainCache` protocol + `MemoryChainCache`.
 - `creds` → `valiss.creds` — creds file, byte-compatible markers and the
   `VALISS-CREDS-VERSION` line.
 - nkeys (vendored subset) → `valiss.nkeys` — base32 + CRC16 encode/decode,
   operator/account/user key pairs over `cryptography` Ed25519.
-- `contrib/grpcauth` → `valiss.grpcauth` — `call_credentials` (client) and
-  the `grpc` extension claim (`Ext`). No server interceptor.
-- `contrib/httpauth` → `valiss.httpauth` — `credential_headers`, `Auth`
-  (httpx hook), and the `http` extension claim (`Ext`). No middleware.
+- `contrib/grpcauth` → `valiss.grpcauth` (package) — `call_credentials` (client),
+  the `Authenticator` server interceptor + `identity_from_context`, and the
+  `grpc` extension claim (`Ext`, pure in `.extension`).
+- `contrib/httpauth` → `valiss.httpauth` (package) — client `credential_headers` /
+  `Auth`, the pure `http` extension claim + `authorize_ext` (`.extension`), the
+  shared `authenticate` core (`._server`), and Django / ASGI server middleware
+  (`.django`, `.asgi`).
+- `contrib/httpsig` / `contrib/grpcsig` → `valiss.httpsig` / `valiss.grpcsig` —
+  message-token transports (client mint + server verify with chain negotiation).
+  The transport-agnostic minter, trust-anchor binding, and
+  verify-with-negotiation state machine live in `valiss._msgtransport`, shared by
+  both; grpcsig binds the checksum to deterministic protobuf (`.payload`).
 
 There is no CLI here; operator/account credential minting for production
 stays with the Go `valiss` CLI. `token.issue_account`/`issue_operator`
@@ -107,7 +125,10 @@ Do not change without changing the Go side in lockstep:
 
 - Headers: `valiss-account-token`, `valiss-user-token`, `valiss-timestamp`,
   `valiss-signature`, `valiss-nonce` (gRPC metadata keys and HTTP headers
-  alike).
+  alike); message-token transports add `valiss-message-token`, the detached
+  `valiss-chain-account-token` / `valiss-chain-user-token`, and the
+  `valiss-chain: required` negotiation signal (an HTTP response header / a gRPC
+  trailer).
 - Request signature: Ed25519 over
   `valiss-req-v1\n<RFC3339Nano timestamp>\n<hex sha256(context)>`, base64
   (standard, padded). The `valiss-req-v1\n` prefix is part of the signed

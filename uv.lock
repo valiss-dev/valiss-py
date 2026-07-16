@@ -647,7 +647,7 @@ wheels = [
 
 [[package]]
 name = "valiss"
-version = "0.7.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -664,6 +664,10 @@ fastapi = [
 grpc = [
     { name = "grpcio" },
 ]
+grpcsig = [
+    { name = "grpcio" },
+    { name = "protobuf" },
+]
 httpx = [
     { name = "httpx" },
 ]
@@ -676,6 +680,7 @@ dev = [
     { name = "grpcio" },
     { name = "grpcio-health-checking" },
     { name = "httpx" },
+    { name = "protobuf" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "starlette" },
@@ -686,10 +691,12 @@ requires-dist = [
     { name = "cryptography", specifier = ">=42" },
     { name = "django", marker = "extra == 'django'", specifier = ">=4.2" },
     { name = "grpcio", marker = "extra == 'grpc'", specifier = ">=1.60" },
+    { name = "grpcio", marker = "extra == 'grpcsig'", specifier = ">=1.60" },
     { name = "httpx", marker = "extra == 'httpx'", specifier = ">=0.27" },
+    { name = "protobuf", marker = "extra == 'grpcsig'", specifier = ">=4.25" },
     { name = "starlette", marker = "extra == 'fastapi'", specifier = ">=0.37" },
 ]
-provides-extras = ["grpc", "httpx", "django", "fastapi"]
+provides-extras = ["grpc", "grpcsig", "httpx", "django", "fastapi"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -698,6 +705,7 @@ dev = [
     { name = "grpcio", specifier = ">=1.60" },
     { name = "grpcio-health-checking", specifier = ">=1.60" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "protobuf", specifier = ">=4.25" },
     { name = "pyright", specifier = ">=1.1.390" },
     { name = "pytest", specifier = ">=8" },
     { name = "starlette", specifier = ">=0.37" },
