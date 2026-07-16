@@ -3,3 +3,6 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 dist/
+
+# go build output of the interop helper
+tests/interop/interop
